@@ -58,7 +58,7 @@ Replace `YOUR_REGISTRY` and `YOUR_TAG` in both commands. Optional VPA settings n
 
 ## Code and docs
 
-The provider is derived from the Azure provider in [kubernetes/autoscaler](https://github.com/kubernetes/autoscaler). Upstream licenses and copyrights are kept. The Go module path is `github.com/Azure/cluster-autoscaler-provider-azure`. It uses the core `sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.0` and Kubernetes 1.37.0 libraries, which are not a cluster support statement.
+The provider is derived from the Azure provider in [kubernetes/autoscaler](https://github.com/kubernetes/autoscaler). Upstream licenses and copyrights are kept, and [NOTICE](NOTICE) lists the third-party code. The Go module path is `github.com/Azure/cluster-autoscaler-provider-azure`. It uses the core `sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.0` and Kubernetes 1.37.0 libraries, which are not a cluster support statement.
 
 | Path | Contents |
 | --- | --- |
@@ -75,3 +75,11 @@ Read [architecture](docs/architecture.md) and [testing](docs/testing.md) for det
 ## Contribute and get help
 
 See [contributing](CONTRIBUTING.md), [support](SUPPORT.md) and the [security policy](SECURITY.md). The project follows the [Microsoft Open Source Code of Conduct](CODE_OF_CONDUCT.md). The code is licensed under [Apache 2.0](LICENSE).
+
+## Trademarks
+
+This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft
+trademarks or logos is subject to and must follow
+[Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general).
+Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
+Any use of third-party trademarks or logos are subject to those third-party's policies.
