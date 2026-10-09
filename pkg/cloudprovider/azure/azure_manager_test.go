@@ -837,6 +837,80 @@ func TestFetchExplicitNodeGroups(t *testing.T) {
 	assert.Equal(t, expectedErr, err, "manager.fetchExplicitNodeGroups return error does not match, expected: %v, actual: %v", expectedErr, err)
 }
 
+func TestFetchExplicitNodeGroupsSkipsUnsupportedDeallocate(t *testing.T) {
+	deallocate := "1:5:Deallocate:paused-vmss:{}|"
+	active := "1:5:Delete:test-asg:{}|"
+	for _, tc := range []struct {
+		name  string
+		specs []string
+	}{
+		{name: "deallocate first", specs: []string{deallocate, active}},
+		{name: "deallocate last", specs: []string{active, deallocate}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := newTestAzureManager(t)
+			vmss := fakeVMSSWithTags("paused-vmss", map[string]*string{
+				"aks-discovery": ptr.To("true"), "min": ptr.To("1"), "max": ptr.To("5"),
+			})
+			manager.azureCache.setScaleSet("paused-vmss", &vmss)
+
+			assert.NoError(t, manager.fetchExplicitNodeGroups(tc.specs))
+
+			groups := manager.getNodeGroups()
+			if !assert.Len(t, groups, 1) {
+				return
+			}
+
+			assert.Equal(t, "test-asg", groups[0].Id())
+			assert.True(t, manager.explicitlyConfigured["paused-vmss"])
+
+			specs, err := ParseLabelAutoDiscoverySpecs(cloudprovider.NodeGroupDiscoveryOptions{
+				NodeGroupAutoDiscoverySpecs: []string{"label:aks-discovery=true"},
+			})
+			assert.NoError(t, err)
+
+			manager.autoDiscoverySpecs = specs
+			discovered, err := manager.getFilteredNodeGroups(specs)
+			assert.NoError(t, err)
+			if !assert.Len(t, discovered, 1) {
+				return
+			}
+
+			assert.Equal(t, "paused-vmss", discovered[0].Id())
+			assert.NoError(t, manager.fetchAutoNodeGroups())
+
+			groups = manager.getNodeGroups()
+			if assert.Len(t, groups, 1) {
+				assert.Equal(t, "test-asg", groups[0].Id())
+			}
+		})
+	}
+}
+
+func TestFetchExplicitNodeGroupsMalformedDeallocate(t *testing.T) {
+	manager := newTestAzureManager(t)
+	err := manager.fetchExplicitNodeGroups([]string{
+		"1:5:Delete:test-asg:{}|", "1:5:Deallocate:paused-vmss:{|",
+	})
+	assert.ErrorContains(t, err, "invalid labels")
+	groups := manager.getNodeGroups()
+	if assert.Len(t, groups, 1) {
+		assert.Equal(t, "test-asg", groups[0].Id())
+	}
+}
+
+func TestBuildNodeGroupFromSpecUnsupportedDeallocate(t *testing.T) {
+	manager := newTestAzureManager(t)
+	group, err := manager.buildNodeGroupFromSpec("1:5:Deallocate:paused-vmss:{}|")
+	assert.Nil(t, group)
+	var unsupported *unsupportedDeallocateError
+	if assert.ErrorAs(t, err, &unsupported) {
+		assert.Equal(t, "paused-vmss", unsupported.name)
+	}
+
+	assert.ErrorContains(t, err, "could not find vmss")
+}
+
 func TestGetFilteredAutoscalingGroupsVmss(t *testing.T) {
 	originalEnv := saveAndClearEnv()
 	t.Cleanup(func() {

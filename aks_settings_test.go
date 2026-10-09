@@ -120,12 +120,12 @@ func TestUseAKSSettings(t *testing.T) {
 	require.Empty(t, opts.NodeGroups)
 	require.Equal(t, discovery, opts.NodeGroupAutoDiscovery)
 
-	writeAKSSettings(t, path, `{"nodeGroups":[{"name":"file-pool","minSize":2,"maxSize":8},{"name":"paused","minSize":0,"maxSize":5,"scaleDownPolicy":"Deallocate"}]}`)
+	writeAKSSettings(t, path, `{"nodeGroups":[{"name":"file-pool","minSize":2,"maxSize":8},{"name":"paused","minSize":0,"maxSize":5,"scaleDownPolicy":"Deallocate","labels":{"zone":"east:1"},"taints":"key=value:NoSchedule"}]}`)
 	opts.NodeGroups = original
 	fetcher, err = useAKSSettings(&opts, path)
 	require.NoError(t, err)
 	require.NotNil(t, fetcher)
-	require.Equal(t, []string{"2:8:Delete:file-pool:{}|", "0:5:Deallocate:paused:{}|"}, opts.NodeGroups)
+	require.Equal(t, []string{"2:8:Delete:file-pool:{}|", `0:5:Deallocate:paused:{"zone":"east:1"}|key=value:NoSchedule`}, opts.NodeGroups)
 	require.Equal(t, discovery, opts.NodeGroupAutoDiscovery)
 }
 
