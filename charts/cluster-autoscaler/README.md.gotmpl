@@ -4,7 +4,7 @@
 
 The chart installs the Azure provider from this repository. It is based on upstream chart version 9.59.0, with other cloud providers removed.
 
-The project is pre-release. There is no official image yet, and the default image is a placeholder. AKS compatibility work and deallocate mode are not included. See the [project status](../../README.md#status).
+The project is pre-release. There is no official image yet, and the default image is a placeholder. The provider accepts AKS input formats. Deallocate mode is opt-in and requires the proposed core resume patch. See the [project status](../../README.md#status).
 
 ## Introduction
 
@@ -180,6 +180,27 @@ You can use the `customArgs` value to give any argument to cluster autoscaler co
 Typical use case is to give an environment variable as an argument which will be interpolated at execution time.
 
 This is helpful when you need to inject values from configmap or secret.
+
+## Suspended nodes
+
+Use an image built with the proposed core resume patch before enabling [deallocate mode](../../docs/suspended-nodes.md). Supported self-managed VMSS and AKS pools in Deallocate mode can be parked. Self-hosted AKS needs the cluster name, cluster resource group and agent pool read permission in the Azure configuration. Hosted AKS requires an explicit policy from AKS's input. Add the following settings to your existing Azure values:
+
+```yaml
+extraEnv:
+  AZURE_DEALLOCATE: "true"
+extraArgs:
+  startup-taint_1: node.cloudprovider.kubernetes.io/shutdown
+  startup-taint_2: node.kubernetes.io/out-of-service
+rbac:
+  additionalRules:
+    - apiGroups: [""]
+      resources: ["nodes/status"]
+      verbs: ["update"]
+```
+
+Both startup-taint arguments are required for cloud-controller taints during resume. If you supply your own ClusterRole with `rbac.create=false`, add the nodes/status permission there instead.
+
+For one pool, leave AZURE_DEALLOCATE unset and add `--nodes=<min>:<max>:Deallocate:<name>` through `customArgs`. Keep `autoDiscovery.clusterName` set so the chart creates a Deployment. The explicit policy takes precedence over discovery for that pool.
 
 ## Troubleshooting
 

@@ -4,7 +4,7 @@ The cluster autoscaler on Azure dynamically scales Kubernetes worker nodes. It r
 
 This README will help you get cluster autoscaler running on your Azure Kubernetes cluster.
 
-The provider in this repository is pre-release. AKS compatibility work and deallocate mode are not included. The inherited configuration examples below are not a statement of AKS or Kubernetes version support. Commands that create credentials or deploy resources require Azure access and a configured cluster.
+The provider in this repository is pre-release and accepts [AKS input formats](../../../docs/architecture.md#aks-inputs). The opt-in [deallocate mode](../../../docs/suspended-nodes.md) parks VMs in supported VMSS pools, including AKS pools set to AKS's Deallocate scale-down mode, and requires the proposed core resume patch. The inherited configuration examples below are not a statement of AKS or Kubernetes version support. Commands that create credentials or deploy resources require Azure access and a configured cluster.
 
 ## Version and image selection
 
