@@ -12,7 +12,15 @@ main.go
 
 [`mustBuildAutoscaler`](../main.go) passes the clients, informers and manager to the core's builder. The scheduling simulation and autoscaling loop come from `sigs.k8s.io/cluster-autoscaler`, not a local copy.
 
-[`pkg/cloudprovider/router`](../pkg/cloudprovider/router/router.go) registers only Azure. [`azure_cloud_provider.go`](../pkg/cloudprovider/azure/azure_cloud_provider.go) builds the provider, which discovers groups, creates node templates and requests scale changes. Scale-down deletes instances. AKS compatibility work and deallocate mode are not included.
+[`pkg/cloudprovider/router`](../pkg/cloudprovider/router/router.go) registers only Azure. [`azure_cloud_provider.go`](../pkg/cloudprovider/azure/azure_cloud_provider.go) builds the provider, which discovers groups, creates node templates and requests scale changes. Scale-down deletes instances. The provider accepts AKS input formats, but deallocate mode is not included.
+
+## AKS inputs
+
+Set `--config-path=/opt/conf/autoscaler/settings.json` to read AKS node groups from a mounted JSON or YAML file. The `nodeGroups` array replaces `--nodes` and leaves auto-discovery unchanged. Each group has `name`, `minSize`, `maxSize`, optional `scaleDownPolicy` (default `Delete`), `labels` (a string map) and `taints` (a comma-separated string such as `dedicated=yes:NoSchedule`). Read errors are logged and retried on each loop. Changes to the decoded node groups restart the process, including label, taint and policy changes. Other settings, including `autoScalerProfile`, are ignored.
+
+An empty `--config-path` keeps static configuration, unlike the AKS fork, which always reads its fixed path. The flags `--enable-force-delete`, `--enable-dynamic-instance-list` and `--enable-detailed-cse-message` are accepted but have no effect. Use the existing Azure configuration fields for those features.
+
+The provider accepts `--nodes=min:max:name`, `--nodes=min:max:policy:name` and `--nodes=min:max:policy:name:labels JSON|taints`, with `Delete` or `Deallocate` as the policy. Nonempty VMSS labels and taints replace their tag values in node templates. VMs pool labels override matching agent-pool labels, and their taints are appended to agent-pool taints.
 
 ## Packages and modules
 
