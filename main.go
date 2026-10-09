@@ -222,6 +222,7 @@ func main() {
 
 	autoscalingFlags := &flags.AutoscalingFlags{}
 	autoscalingFlags.AddFlags(pflag.CommandLine)
+	addAKSCompatibilityFlags(pflag.CommandLine)
 	logsapi.AddFlags(loggingConfig, pflag.CommandLine)
 	featureGate.AddFlag(pflag.CommandLine)
 	kube_flag.InitFlags()
@@ -325,6 +326,15 @@ func main() {
 			},
 		})
 	}
+}
+
+// addAKSCompatibilityFlags registers fork-only flags absent from the shared core.
+func addAKSCompatibilityFlags(fs *pflag.FlagSet) *string {
+	configPath := fs.String("config-path", "", "Path to the mounted AKS settings file. Empty uses --nodes and node group auto-discovery.")
+	fs.Bool("enable-force-delete", false, "No effect. Accepted for AKS argument compatibility.")
+	fs.Bool("enable-dynamic-instance-list", false, "No effect. Accepted for AKS argument compatibility.")
+	fs.Bool("enable-detailed-cse-message", false, "No effect. Accepted for AKS argument compatibility.")
+	return configPath
 }
 
 func leaderElectionConfiguration() componentbaseconfig.LeaderElectionConfiguration {
