@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/component-detection-manifest.json",
+  "version": 1,
+  "registrations": [
+    {
+      "component": {
+        "type": "git",
+        "git": {
+          "name": "kubernetes/autoscaler",
+          "repositoryUrl": "https://github.com/kubernetes/autoscaler",
+          "commitHash": "7df904eabeef796b63ca845b7d5e7f6d9a300f44"
+        }
+      },
+      "developmentDependency": false
+    }
+  ]
+}
