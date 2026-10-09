@@ -101,10 +101,19 @@ type ScaleSet struct {
 	enableFastDeleteOnFailedProvisioning bool
 
 	enableLabelPredictionsOnTemplate bool
+
+	deallocate         bool
+	explicitDeallocate bool
+
+	*suspendedVMSSState
 }
 
 // NewScaleSet creates a new NewScaleSet.
 func NewScaleSet(spec *dynamic.NodeGroupSpec, az *AzureManager, curSize int64, dedicatedHost bool) (*ScaleSet, error) {
+	return newScaleSet(azureNodeGroupSpec{NodeGroupSpec: spec}, az, curSize, dedicatedHost)
+}
+
+func newScaleSet(spec azureNodeGroupSpec, az *AzureManager, curSize int64, dedicatedHost bool) (*ScaleSet, error) {
 	scaleSet := &ScaleSet{
 		azureRef: azureRef{
 			Name: spec.Name,
@@ -125,6 +134,11 @@ func NewScaleSet(spec *dynamic.NodeGroupSpec, az *AzureManager, curSize int64, d
 		enableDetailedCSEMessage:         az.config.EnableDetailedCSEMessage,
 		enableLabelPredictionsOnTemplate: az.config.EnableLabelPredictionsOnTemplate,
 		dedicatedHost:                    dedicatedHost,
+		deallocate:                       az.config.Deallocate || spec.policy == scaleDownPolicyDeallocate,
+		explicitDeallocate:               spec.policy == scaleDownPolicyDeallocate,
+	}
+	if scaleSet.deallocate {
+		scaleSet.suspendedVMSSState = &suspendedVMSSState{}
 	}
 
 	if az.config.VmssVirtualMachinesCacheTTLInSeconds != 0 {
@@ -145,11 +159,23 @@ func NewScaleSet(spec *dynamic.NodeGroupSpec, az *AzureManager, curSize int64, d
 
 	scaleSet.enableFastDeleteOnFailedProvisioning = az.config.EnableFastDeleteOnFailedProvisioning
 
+	if scaleSet.suspendsParkedNodes() {
+		if err := scaleSet.validateSuspendedMode(); err != nil {
+			return nil, &unsupportedDeallocateError{name: spec.Name, reason: err}
+		}
+		if _, err := scaleSet.suspendedInventory(context.Background(), true); err != nil {
+			return nil, err
+		}
+	}
+
 	return scaleSet, nil
 }
 
 // MinSize returns minimum size of the node group.
 func (scaleSet *ScaleSet) MinSize(ctx context.Context) int {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.minSize + scaleSet.parkedCount()
+	}
 	return scaleSet.minSize
 }
 
@@ -178,6 +204,7 @@ func (scaleSet *ScaleSet) Autoprovisioned(ctx context.Context) bool {
 // GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
 // NodeGroup. Returning a nil will result in using default options.
 func (scaleSet *ScaleSet) GetOptions(ctx context.Context, defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	options := &defaults
 	template, err := scaleSet.getVMSSFromCache()
 	if err != nil {
 		klog.Errorf("failed to get information for VMSS: %s", scaleSet.Name)
@@ -185,13 +212,35 @@ func (scaleSet *ScaleSet) GetOptions(ctx context.Context, defaults config.NodeGr
 		// Every invocation of GetOptions() returns an error if this condition is met:
 		// `if err != nil && err != cloudprovider.ErrNotImplemented`
 		// The error return value is intended to only capture unimplemented.
-		return nil, nil
+		if !scaleSet.suspendsParkedNodes() {
+			return nil, nil
+		}
+	} else {
+		options = scaleSet.manager.GetScaleSetOptions(*template.Name, defaults)
+		if scaleSet.suspendsParkedNodes() {
+			tags := scaleSet.manager.azureCache.getAutoscalingOptions(azureRef{Name: *template.Name})
+			if value, ok := getDurationOption(tags, *template.Name, config.DefaultMaxNodeProvisionTimeKey); ok {
+				options.MaxNodeProvisionTime = value
+			}
+			if value, ok := getDurationOption(tags, *template.Name, config.DefaultMaxNodeStartupTimeKey); ok {
+				options.MaxNodeStartupTime = value
+			}
+		}
 	}
-	return scaleSet.manager.GetScaleSetOptions(*template.Name, defaults), nil
+	if scaleSet.suspendsParkedNodes() {
+		// Resume can precede another Start and a capacity PUT, each with its own timeout.
+		// Node transition timestamps lose subsecond precision when serialized.
+		options.MaxNodeStartupTime = max(options.MaxNodeStartupTime,
+			options.MaxNodeProvisionTime+2*vmssContextTimeout+time.Second)
+	}
+	return options, nil
 }
 
 // MaxSize returns maximum size of the node group.
 func (scaleSet *ScaleSet) MaxSize(ctx context.Context) int {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.maxSize + scaleSet.parkedCount()
+	}
 	return scaleSet.maxSize
 }
 
@@ -318,6 +367,11 @@ func (scaleSet *ScaleSet) setScaleSetSize(size int64, delta int) error {
 // TargetSize returns the current TARGET size of the node group. It is possible that the
 // number is different from the number of nodes registered in Kubernetes.
 func (scaleSet *ScaleSet) TargetSize(ctx context.Context) (int, error) {
+	if scaleSet.suspendsParkedNodes() {
+		if _, err := scaleSet.suspendedInventory(ctx, false); err != nil {
+			return 0, err
+		}
+	}
 	size, err := scaleSet.getScaleSetSize()
 	return int(size), err
 }
@@ -348,6 +402,9 @@ func (scaleSet *ScaleSet) canIncreaseSize(delta int) (int64, error) {
 
 // IncreaseSize increases Scale Set size
 func (scaleSet *ScaleSet) IncreaseSize(ctx context.Context, delta int) error {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.increaseSuspended(ctx, delta)
+	}
 	size, err := scaleSet.canIncreaseSize(delta)
 	if err != nil {
 		return err
@@ -369,6 +426,9 @@ func (scaleSet *ScaleSet) IncreaseSize(ctx context.Context, delta int) error {
 // for atomic-scale-up ProvisioningRequest support to provide a capacity guarantee
 // before workloads are admitted.
 func (scaleSet *ScaleSet) AtomicIncreaseSize(ctx context.Context, delta int) error {
+	if scaleSet.suspendsParkedNodes() {
+		return cloudprovider.ErrNotImplemented
+	}
 	size, err := scaleSet.canIncreaseSize(delta)
 	if err != nil {
 		return err
@@ -887,6 +947,9 @@ func (scaleSet *ScaleSet) waitForDeleteInstances(poller *runtime.Poller[armcompu
 
 // DeleteNodes deletes the nodes from the group.
 func (scaleSet *ScaleSet) DeleteNodes(ctx context.Context, nodes []*apiv1.Node) error {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.deleteSuspendedNodes(ctx, nodes, true)
+	}
 	klog.V(3).Infof("Delete nodes requested: %q\n", nodes)
 	size, err := scaleSet.getScaleSetSize()
 	if err != nil {
@@ -899,11 +962,18 @@ func (scaleSet *ScaleSet) DeleteNodes(ctx context.Context, nodes []*apiv1.Node) 
 	if int(size) <= scaleSet.MinSize(context.TODO()) {
 		return fmt.Errorf("min size reached, nodes will not be deleted")
 	}
-	return scaleSet.ForceDeleteNodes(context.TODO(), nodes)
+	return scaleSet.ForceDeleteNodes(ctx, nodes)
 }
 
 // ForceDeleteNodes deletes nodes from the group regardless of constraints.
 func (scaleSet *ScaleSet) ForceDeleteNodes(ctx context.Context, nodes []*apiv1.Node) error {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.deleteSuspendedNodes(ctx, nodes, false)
+	}
+	return scaleSet.forceDeleteNodes(ctx, nodes)
+}
+
+func (scaleSet *ScaleSet) forceDeleteNodes(ctx context.Context, nodes []*apiv1.Node) error {
 	klog.V(3).Infof("Delete nodes requested: %q\n", nodes)
 	refs := make([]*azureRef, 0, len(nodes))
 	hasUnregisteredNodes := false
@@ -962,6 +1032,9 @@ func (scaleSet *ScaleSet) TemplateNodeInfo(ctx context.Context) (*framework.Node
 
 // Nodes returns a list of all nodes that belong to this node group.
 func (scaleSet *ScaleSet) Nodes(ctx context.Context) ([]cloudprovider.Instance, error) {
+	if scaleSet.suspendsParkedNodes() {
+		return scaleSet.suspendedNodes(ctx)
+	}
 	curSize, getVMSSError := scaleSet.getCurSize()
 	if getVMSSError != nil {
 		klog.Errorf("Failed to get current size for vmss %q: %v", scaleSet.Name, getVMSSError.error)
