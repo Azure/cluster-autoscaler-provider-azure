@@ -188,6 +188,7 @@ Use an image built with the proposed core resume patch before enabling [dealloca
 ```yaml
 extraEnv:
   AZURE_DEALLOCATE: "true"
+  AZURE_MAX_ACTIVE_NODES: "10"
 extraArgs:
   startup-taint_1: node.cloudprovider.kubernetes.io/shutdown
   startup-taint_2: node.kubernetes.io/out-of-service
@@ -201,6 +202,8 @@ rbac:
 Both startup-taint arguments are required for cloud-controller taints during resume. If you supply your own ClusterRole with `rbac.create=false`, add the nodes/status permission there instead.
 
 For one pool, leave AZURE_DEALLOCATE unset and add `--nodes=<min>:<max>:Deallocate:<name>` through `customArgs`. Keep `autoDiscovery.clusterName` set so the chart creates a Deployment. The explicit policy takes precedence over discovery for that pool.
+
+The active-node cap counts running and upcoming capacity, not retained parked VMs. Leave `--max-nodes-total` unset or zero, because that core flag counts retained Nodes. See the provider guide for running min/max semantics and the cross-group minimum-quota limitation. Default chart permissions and renders remain unchanged.
 
 ## Troubleshooting
 

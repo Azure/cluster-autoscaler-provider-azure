@@ -59,4 +59,10 @@ The adjusted bounds let a pool resume after reaching its configured maximum, and
 
 Core status displays the adjusted total bounds, not the configured running bounds. Similar-group balancing still orders groups by total TargetSize. Synthetic unregistered and failed-creation cleanup physically deletes VMs that have no registered Node. Synthetic cleanup of registered instances is refused unless the provider is tracking a failed resume of the same VM and Node.
 
-Cluster-wide limits (`--max-nodes-total`, `--cores-total` and `--memory-total`) count stopped Nodes, as in the AKS fork.
+## Cluster limits
+
+Set `maxActiveNodes` or `AZURE_MAX_ACTIVE_NODES` to add a `nodes` maximum to the provider ResourceLimiter. Zero leaves the additional node cap unset. Suspended Nodes do not consume maximum nodes, cores, memory or GPU quota, while resuming Nodes and upcoming templates do. Minimum-resource tracking keeps its existing semantics.
+
+Use `--max-nodes-total=0` when relying on the active-node cap. The core's `--max-nodes-total` flag counts retained Nodes, and the provider warns rather than overriding it. The cap does not limit the total retained VM inventory.
+
+Until the core minimum-size quota fix lands, `--enforce-node-group-min-size` does not reserve quota for minimum-size growth within the same loop. A later scale-up in that loop can exceed `maxActiveNodes` or other cluster quotas, even with one group growing to minimum. Several groups growing to minimum can also exceed quotas. The provider does not change that core path. Azure VMSS failures, lost Node permissions and delayed registration can still prevent the configured running minimum from being reached.
