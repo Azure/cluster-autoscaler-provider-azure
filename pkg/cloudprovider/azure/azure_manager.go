@@ -169,6 +169,11 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 		return nil, err
 	}
 
+	if cfg.MaxActiveNodes > 0 && !manager.suspendedModeEnabled() {
+		manager.Cleanup()
+		return nil, fmt.Errorf("maxActiveNodes requires deallocate or an explicit Deallocate node group")
+	}
+
 	return manager, nil
 }
 

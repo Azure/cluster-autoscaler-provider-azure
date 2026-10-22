@@ -92,6 +92,22 @@ func (s *ScaleSet) suspendsParkedNodes() bool {
 	return s.deallocate
 }
 
+func (m *AzureManager) suspendedModeEnabled() bool {
+	if m.config.Deallocate {
+		return true
+	}
+	if m.azureCache == nil {
+		return false
+	}
+
+	for _, group := range m.getNodeGroups() {
+		if s, ok := group.(*ScaleSet); ok && s.suspendsParkedNodes() {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *ScaleSet) validateSuspendedMode() error {
 	cfg := s.manager.config
 	hosted := cfg.HostedSubscriptionID != "" || cfg.HostedResourceGroup != "" || cfg.HostedResourceProxyURL != ""
