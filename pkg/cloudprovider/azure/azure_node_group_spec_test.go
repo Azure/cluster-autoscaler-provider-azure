@@ -286,9 +286,11 @@ func TestSuspendedSelectedGroupAndVMsPoolGate(t *testing.T) {
 	m.UnregisterNodeGroup(original)
 	m.config.Deallocate = false
 
+	require.False(t, m.suspendedModeEnabled())
 	require.NoError(t, m.fetchExplicitNodeGroups([]string{"0:3:Deallocate:pool"}))
 	require.Len(t, m.getNodeGroups(), 1)
 	require.True(t, m.getNodeGroups()[0].(*ScaleSet).suspendsParkedNodes())
+	require.True(t, m.suspendedModeEnabled())
 
 	m.azureCache.vmsPoolMap["workers"] = armcontainerservice.AgentPool{}
 	_, err := m.buildNodeGroupFromSpec("0:3:Deallocate:workers/Standard_D4_v2")
@@ -352,6 +354,44 @@ func TestSuspendedExplicitLoadsInitialInventory(t *testing.T) {
 
 			require.Len(t, manager.getNodeGroups(), 1)
 			require.True(t, manager.getNodeGroups()[0].(*ScaleSet).suspendsParkedNodes())
+			require.True(t, manager.suspendedModeEnabled())
+		})
+	}
+}
+
+func TestSuspendedCapRequiresManagerMode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		global  bool
+		specs   []string
+		wantErr bool
+	}{
+		{name: "global", global: true},
+		{name: "per group", specs: []string{"0:3:Deallocate:pool"}},
+		{name: "disabled", wantErr: true},
+		{name: "Delete group", specs: []string{"0:3:Delete:pool"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, _ := newSuspendedProvider(t, &suspendedWorld{states: []string{vmPowerStateRunning}},
+				fake.NewClientset(), 0, 3)
+			fields := `"resourceGroup":"rg","maxActiveNodes":2`
+
+			if tc.global {
+				fields += `,"deallocate":true`
+			}
+
+			cfg := strings.Replace(validAzureCfg, `"resourceGroup": "fakeId"`, fields, 1)
+			manager, err := createAzureManagerInternal(strings.NewReader(cfg),
+				cloudprovider.NodeGroupDiscoveryOptions{NodeGroupSpecs: tc.specs}, provider.azureManager.azClient)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "maxActiveNodes requires")
+				return
+			}
+
+			require.NoError(t, err)
+			t.Cleanup(manager.Cleanup)
+			require.Equal(t, tc.global, manager.config.Deallocate)
+			require.True(t, manager.suspendedModeEnabled())
 		})
 	}
 }

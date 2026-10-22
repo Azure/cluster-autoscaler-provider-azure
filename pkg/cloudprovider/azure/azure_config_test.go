@@ -41,17 +41,21 @@ func TestBuildAzureSuspendedConfig(t *testing.T) {
 		name, fields, wantError string
 		env                     map[string]string
 		wantGlobal              bool
+		wantCap                 int64
 	}{
 		{name: "disabled"},
 		{name: "global", fields: `"deallocate":true,`, wantGlobal: true},
+		{name: "per-group cap validated by manager", fields: `"maxActiveNodes":3,`, wantCap: 3},
+		{name: "negative cap", fields: `"maxActiveNodes":-1,`, wantError: "nonnegative"},
 
-		{name: "environment overrides file", fields: `"deallocate":false,`,
-			env:        map[string]string{"AZURE_DEALLOCATE": "true"},
-			wantGlobal: true},
+		{name: "environment overrides file", fields: `"deallocate":false,"maxActiveNodes":1,`,
+			env:        map[string]string{"AZURE_DEALLOCATE": "true", "AZURE_MAX_ACTIVE_NODES": "4"},
+			wantGlobal: true, wantCap: 4},
 
 		{name: "environment disables global mode", fields: `"deallocate":true,`,
 			env: map[string]string{"AZURE_DEALLOCATE": "false"}},
 		{name: "invalid boolean", env: map[string]string{"AZURE_DEALLOCATE": "bad"}, wantError: "AZURE_DEALLOCATE"},
+		{name: "invalid cap", env: map[string]string{"AZURE_MAX_ACTIVE_NODES": "bad"}, wantError: "AZURE_MAX_ACTIVE_NODES"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for key, value := range tc.env {
@@ -68,6 +72,7 @@ func TestBuildAzureSuspendedConfig(t *testing.T) {
 
 			require.NoError(t, err)
 			require.Equal(t, tc.wantGlobal, cfg.Deallocate)
+			require.Equal(t, tc.wantCap, cfg.MaxActiveNodes)
 		})
 	}
 }
