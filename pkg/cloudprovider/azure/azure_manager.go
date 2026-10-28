@@ -30,6 +30,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"k8s.io/apimachinery/pkg/util/wait"
+	kubeclient "k8s.io/client-go/kubernetes"
 	kretry "k8s.io/client-go/util/retry"
 	klog "k8s.io/klog/v2"
 	providerazureconsts "sigs.k8s.io/cloud-provider-azure/pkg/consts"
@@ -83,8 +84,10 @@ type AzureManager struct {
 	// lastRefresh to force refresh on the next check.
 	lastRefresh time.Time
 
-	autoDiscoverySpecs   []labelAutoDiscoveryConfig
-	explicitlyConfigured map[string]bool
+	autoDiscoverySpecs        []labelAutoDiscoveryConfig
+	explicitlyConfigured      map[string]bool
+	kubeClient                kubeclient.Interface
+	cordonNodeBeforeTerminate bool
 }
 
 // createAzureManagerInternal allows for a custom azClient to be passed in by tests.
@@ -106,7 +109,7 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 	klog.Infof("Starting azure manager with subscription ID %q", cfg.SubscriptionID)
 
 	if azClient == nil {
-		azClient, err = newAzClient(cfg, &env)
+		azClient, err = newAzClient(cfg, &env, discoveryOpts.NodeGroupSpecs)
 		if err != nil {
 			return nil, err
 		}
@@ -141,16 +144,23 @@ func createAzureManagerInternal(configReader io.Reader, discoveryOpts cloudprovi
 	}
 	manager.autoDiscoverySpecs = specs
 
-	if err := manager.fetchExplicitNodeGroups(discoveryOpts.NodeGroupSpecs); err != nil {
-		return nil, err
-	}
-
 	retryBackoff := wait.Backoff{
 		Duration: 2 * time.Minute,
 		Factor:   1.0,
 		Jitter:   0.1,
 		Steps:    6,
 		Cap:      10 * time.Minute,
+	}
+
+	// Validating a Deallocate group reads its VMSS from the cache, and newAzureCache only logs
+	// a failed load, so retry it before building explicit groups.
+	if cfg.Deallocate || hasExplicitDeallocatePolicy(discoveryOpts.NodeGroupSpecs) {
+		if err := kretry.OnError(retryBackoff, isErrorRetriable, manager.azureCache.regenerate); err != nil {
+			return nil, fmt.Errorf("load VMSS cache for deallocate groups: %w", err)
+		}
+	}
+	if err := manager.fetchExplicitNodeGroups(discoveryOpts.NodeGroupSpecs); err != nil {
+		return nil, err
 	}
 
 	// skuCache will already be created at this step by newAzureCache()
@@ -174,6 +184,12 @@ func (m *AzureManager) fetchExplicitNodeGroups(specs []string) error {
 	for _, spec := range specs {
 		nodeGroup, err := m.buildNodeGroupFromSpec(spec)
 		if err != nil {
+			var unsupported *unsupportedDeallocateError
+			if errors.As(err, &unsupported) {
+				klog.Error(unsupported)
+				m.explicitlyConfigured[unsupported.name] = true
+				continue
+			}
 			return fmt.Errorf("failed to parse node group spec: %v", err)
 		}
 		if m.RegisterNodeGroup(nodeGroup) {
@@ -219,7 +235,11 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 	// Therefore, we cannot solely rely on the VMType to determine the node group type.
 	// Instead, we need to check the cache to determine if the agent pool is a VMs pool.
 	isVMsPool, agentPoolName, sku := m.parseSKUAndVMsAgentpoolNameFromSpecName(s.Name)
+	deallocate := s.policy == scaleDownPolicyDeallocate || m.config.Deallocate
 	if isVMsPool {
+		if deallocate {
+			return nil, &unsupportedDeallocateError{name: s.Name, reason: fmt.Errorf("VMs pools are not supported")}
+		}
 		pool, err := NewVMPool(s.NodeGroupSpec, m, agentPoolName, sku)
 		if err != nil {
 			return nil, err
@@ -230,14 +250,17 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 
 	switch m.config.VMType {
 	case providerazureconsts.VMTypeStandard:
+		if deallocate {
+			return nil, &unsupportedDeallocateError{name: s.Name, reason: fmt.Errorf("standard pools are not supported")}
+		}
 		return NewAgentPool(s.NodeGroupSpec, m)
 	case providerazureconsts.VMTypeVMSS:
-		scaleSet, err := NewScaleSet(s.NodeGroupSpec, m, -1, false)
+		group, err := newScaleSet(s, m, -1, false)
 		if err != nil {
 			return nil, err
 		}
-		scaleSet.labels, scaleSet.taints = s.labels, s.taints
-		return scaleSet, nil
+		group.labels, group.taints = s.labels, s.taints
+		return group, nil
 	default:
 		return nil, fmt.Errorf("vmtype %s not supported", m.config.VMType)
 	}
@@ -246,10 +269,12 @@ func (m *AzureManager) buildNodeGroupFromSpec(spec string) (cloudprovider.NodeGr
 // Refresh is called before every main loop and can be used to dynamically update cloud provider state.
 // In particular the list of node groups returned by NodeGroups can change as a result of CloudProvider.Refresh().
 func (m *AzureManager) Refresh() error {
-	if m.lastRefresh.Add(m.azureCache.refreshInterval).After(time.Now()) {
-		return nil
+	if !m.lastRefresh.Add(m.azureCache.refreshInterval).After(time.Now()) {
+		if err := m.forceRefresh(); err != nil {
+			return err
+		}
 	}
-	return m.forceRefresh()
+	return m.reconcileSuspendedNodes()
 }
 
 func (m *AzureManager) forceRefresh() error {
@@ -288,7 +313,7 @@ func (m *AzureManager) fetchAutoNodeGroups() error {
 		if m.explicitlyConfigured[id] {
 			// This NodeGroup was explicitly configured, but would also be
 			// autodiscovered. We want the explicitly configured min and max
-			// nodes to take precedence.
+			// nodes to take precedence. Skipped Deallocate groups stay excluded.
 			klog.V(3).Infof("Ignoring explicitly configured NodeGroup %s for autodiscovery.", group.Id())
 			continue
 		}
