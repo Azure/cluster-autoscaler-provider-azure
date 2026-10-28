@@ -181,6 +181,27 @@ Typical use case is to give an environment variable as an argument which will be
 
 This is helpful when you need to inject values from configmap or secret.
 
+## Deallocate mode
+
+Supported self-managed VMSS pools in [deallocate mode](../../docs/suspended-nodes.md) can be parked. Resuming Nodes stay suspended until running and Ready. Failed or timed-out resumes are parked again. Running the chart against AKS pools is for testing only, because AKS does not support your own autoscaler on AKS-managed pools. That setup needs the cluster name, cluster resource group and agent pool read permission in the Azure configuration. Hosted AKS requires an explicit policy from AKS's input. Add the following settings to your existing Azure values:
+
+```yaml
+extraEnv:
+  AZURE_DEALLOCATE: "true"
+extraArgs:
+  startup-taint_1: node.cloudprovider.kubernetes.io/shutdown
+  startup-taint_2: node.kubernetes.io/out-of-service
+rbac:
+  additionalRules:
+    - apiGroups: [""]
+      resources: ["nodes/status"]
+      verbs: ["update"]
+```
+
+Both startup-taint arguments make core treat Nodes with lingering cloud-controller taints as NotReady and strip those taints from scheduling templates. The resume processor already strips them from in-flight resume snapshots. If you supply your own ClusterRole with `rbac.create=false`, add the nodes/status permission there instead.
+
+For one pool, leave AZURE_DEALLOCATE unset and add `--nodes=<min>:<max>:Deallocate:<name>` through `customArgs`. Keep `autoDiscovery.clusterName` set so the chart creates a Deployment. The explicit policy takes precedence over discovery for that pool.
+
 ## Troubleshooting
 
 The chart will succeed even if the container arguments are incorrect. A few minutes after starting `kubectl logs --namespace kube-system -l "app.kubernetes.io/instance=cluster-autoscaler" --tail=50` should loop through something like

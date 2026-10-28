@@ -20,7 +20,7 @@ Set `--config-path=/opt/conf/autoscaler/settings.json` to read AKS node groups f
 
 An empty `--config-path` keeps static configuration, unlike the AKS fork, which always reads its fixed path. The flags `--enable-force-delete`, `--enable-dynamic-instance-list` and `--enable-detailed-cse-message` are accepted but have no effect. Use the existing Azure configuration fields for those features.
 
-The provider accepts `--nodes=min:max:name`, `--nodes=min:max:policy:name` and `--nodes=min:max:policy:name:labels JSON|taints`. Nonempty VMSS labels and taints replace their tag values in node templates. VMs pool labels override matching agent-pool labels, and their taints are appended to agent-pool taints. Groups requesting `Deallocate` use deallocate mode when supported. Unsupported groups are logged and excluded, including from auto-discovery. They never fall back to deletion. See [deallocate mode](suspended-nodes.md) for the pool restrictions and parking lifecycle.
+The provider accepts `--nodes=min:max:name`, `--nodes=min:max:policy:name` and `--nodes=min:max:policy:name:labels JSON|taints`. Nonempty VMSS labels and taints replace their tag values in node templates. VMs pool labels override matching agent-pool labels, and their taints are appended to agent-pool taints. Groups requesting `Deallocate` use deallocate mode when supported. Unsupported groups are logged and excluded, including from auto-discovery. They never fall back to deletion. See [deallocate mode](suspended-nodes.md) for the pool restrictions and resume accounting.
 
 ## Packages and modules
 
