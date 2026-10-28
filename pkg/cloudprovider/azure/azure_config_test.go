@@ -33,6 +33,45 @@ func TestCloudProviderAzureConsts(t *testing.T) {
 	assert.Equal(t, "standard", providerazureconsts.VMTypeStandard)
 }
 
+func TestBuildAzureSuspendedConfig(t *testing.T) {
+	originalEnv := saveAndClearEnv()
+	t.Cleanup(func() { loadEnv(originalEnv) })
+
+	for _, tc := range []struct {
+		name, fields, wantError string
+		env                     map[string]string
+		wantGlobal              bool
+	}{
+		{name: "disabled"},
+		{name: "global", fields: `"deallocate":true,`, wantGlobal: true},
+
+		{name: "environment overrides file", fields: `"deallocate":false,`,
+			env:        map[string]string{"AZURE_DEALLOCATE": "true"},
+			wantGlobal: true},
+
+		{name: "environment disables global mode", fields: `"deallocate":true,`,
+			env: map[string]string{"AZURE_DEALLOCATE": "false"}},
+		{name: "invalid boolean", env: map[string]string{"AZURE_DEALLOCATE": "bad"}, wantError: "AZURE_DEALLOCATE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
+
+			body := strings.Replace(validAzureCfg, "{", "{"+tc.fields, 1)
+			cfg, err := BuildAzureConfig(strings.NewReader(body))
+
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.wantGlobal, cfg.Deallocate)
+		})
+	}
+}
+
 // Note: The previous tests for InitializeCloudProviderRateLimitConfig were removed
 // because that function no longer exists in cloud-provider-azure v1.32.0+.
 // The rate limit configuration has been restructured to use

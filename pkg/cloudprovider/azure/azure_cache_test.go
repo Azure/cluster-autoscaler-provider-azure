@@ -24,8 +24,11 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v8"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cluster-autoscaler/pkg/config/dynamic"
 )
 
 func TestFetchVMsPools(t *testing.T) {
@@ -72,6 +75,41 @@ func TestRegister(t *testing.T) {
 	ss1.minSize = 2
 	isSuccess = ac.Register(ss1)
 	assert.True(t, isSuccess)
+}
+
+func TestRegisterSuspendedConfiguredBounds(t *testing.T) {
+	world := &suspendedWorld{states: []string{vmPowerStateDeallocated, vmPowerStateRunning, vmPowerStateDeallocated}}
+	provider, group := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+	manager := provider.azureManager
+	group.recordPower("vm-1", suspendedPowerOperation{park: true, polling: true})
+
+	require.Equal(t, 3, group.MinSize(t.Context()))
+	require.Equal(t, 6, group.MaxSize(t.Context()))
+
+	next, err := NewScaleSet(&dynamic.NodeGroupSpec{Name: "pool", MinSize: 0, MaxSize: 3}, manager, 3, false)
+	require.NoError(t, err)
+	require.Equal(t, 0, next.MinSize(t.Context()))
+	require.Equal(t, 3, next.MaxSize(t.Context()))
+	require.False(t, manager.azureCache.Register(next), "dynamic differences must not replace a group")
+	require.Same(t, group, manager.getNodeGroups()[0])
+
+	set := world.vmss()
+	set.Tags["discover"], set.Tags["min"], set.Tags["max"] = ptr.To("yes"), ptr.To("0"), ptr.To("3")
+	manager.azureCache.setScaleSet("pool", set)
+	manager.explicitlyConfigured = make(map[string]bool)
+	manager.autoDiscoverySpecs, err = ParseLabelAutoDiscoverySpecs(cloudprovider.NodeGroupDiscoveryOptions{
+		NodeGroupAutoDiscoverySpecs: []string{"label:discover=yes"},
+	})
+	require.NoError(t, err)
+	for range 2 {
+		require.NoError(t, manager.fetchAutoNodeGroups())
+		require.Same(t, group, manager.getNodeGroups()[0])
+
+		op, pending := group.powerOperation("vm-1")
+		require.True(t, pending)
+		require.True(t, op.park)
+		require.Equal(t, 6, group.MaxSize(t.Context()))
+	}
 }
 
 func TestUnRegister(t *testing.T) {
