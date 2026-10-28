@@ -36,12 +36,16 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/policy/retryrepectthrottled"
 	"sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider"
+	"sigs.k8s.io/cluster-autoscaler/pkg/utils/kubernetes"
 )
 
 type vmssPowerClient interface {
 	BeginDeallocate(context.Context, string, string, string,
 		*armcompute.VirtualMachineScaleSetVMsClientBeginDeallocateOptions,
 	) (*runtime.Poller[armcompute.VirtualMachineScaleSetVMsClientDeallocateResponse], error)
+	BeginStart(context.Context, string, string, string,
+		*armcompute.VirtualMachineScaleSetVMsClientBeginStartOptions,
+	) (*runtime.Poller[armcompute.VirtualMachineScaleSetVMsClientStartResponse], error)
 }
 
 type suspendedPowerOperation struct {
@@ -51,6 +55,8 @@ type suspendedPowerOperation struct {
 	polling   bool
 	completed bool
 	failed    bool
+	// resumed is the Start time from the Node's resume marker. A park keeps it to re-park a failed resume.
+	resumed time.Time
 }
 
 type suspendedVMSSState struct {
@@ -247,10 +253,16 @@ func (s *ScaleSet) suspendedInventory(ctx context.Context, refresh bool) ([]*arm
 		}
 
 		observed[vmID] = true
-		_, pending := s.pendingPower[vmID]
+		op, pending := s.pendingPower[vmID]
 		desiredParked, hasOverride := s.powerOverrides[vmID]
 		provisioning := ptr.Deref(vm.Properties.ProvisioningState, "")
 		powerState := suspendedPowerState(vm)
+
+		resumeFailed := pending && !op.park && provisioning == VMProvisioningStateFailed
+		if resumeFailed {
+			op.failed = true
+			s.pendingPower[vmID] = op
+		}
 
 		inFlight := provisioning == VMProvisioningStateCreating || provisioning == VMProvisioningStateDeleting
 		unexplainedPowerState := powerState == vmPowerStateUnknown && !pending && !hasOverride &&
@@ -259,7 +271,7 @@ func (s *ScaleSet) suspendedInventory(ctx context.Context, refresh bool) ([]*arm
 			return nil, fmt.Errorf("unknown VM power state for %s", *vm.ID)
 		}
 
-		// An override holds an accepted Deallocate until Azure's view shows it.
+		// An override holds an accepted Start or Deallocate until Azure's view shows it.
 		isParked := isAuthoritativelyParked(vm)
 		if hasOverride {
 			caughtUp := (desiredParked && isParked) || (!desiredParked && powerState == vmPowerStateRunning)
@@ -286,6 +298,17 @@ func (s *ScaleSet) parkedCount() int {
 	s.powerMutex.Lock()
 	defer s.powerMutex.Unlock()
 	return len(s.parkedVMIDs)
+}
+
+func (s *ScaleSet) hasResumes() bool {
+	s.powerMutex.Lock()
+	defer s.powerMutex.Unlock()
+	for _, op := range s.pendingPower {
+		if !op.park {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetPower stops tracking a VM's power operation and falls back to its instance view.
@@ -341,7 +364,8 @@ func (s *ScaleSet) finishPowerPolling(vmID string, sequence uint64, err error) {
 	if op, ok := s.pendingPower[vmID]; ok && op.sequence == sequence {
 		op.polling, op.completed = false, err == nil
 		op.failed = op.failed || isTerminalPowerOperationFailure(err)
-		if op.park && op.failed {
+		// A re-park stays counted as parked; its VM is suspended and is retried until parked.
+		if op.park && op.failed && op.resumed.IsZero() {
 			delete(s.powerOverrides, vmID)
 			delete(s.parkedVMIDs, vmID)
 		}
@@ -350,7 +374,31 @@ func (s *ScaleSet) finishPowerPolling(vmID string, sequence uint64, err error) {
 }
 
 // reconcileSuspendedPower settles pending power operations and continues past per-VM errors.
-func (s *ScaleSet) reconcileSuspendedPower(ctx context.Context, vms []*armcompute.VirtualMachineScaleSetVM) error {
+func (s *ScaleSet) reconcileSuspendedPower(ctx context.Context, vms []*armcompute.VirtualMachineScaleSetVM, nodeList *apiv1.NodeList) error {
+	// Resume reads share one Node list, including outside Refresh.
+	nodes := make(map[string]*apiv1.Node)
+	needsResumeNodes := false
+	for _, vm := range vms {
+		if op, pending := s.powerOperation(*vm.Properties.VMID); pending && !op.park {
+			needsResumeNodes = true
+			break
+		}
+	}
+	if needsResumeNodes {
+		if nodeList == nil {
+			var err error
+			nodeList, err = s.manager.kubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return fmt.Errorf("list nodes to reconcile resumes: %w", err)
+			}
+		}
+		for i := range nodeList.Items {
+			node := &nodeList.Items[i]
+			nodes[node.Name] = node
+		}
+	}
+
+	// Continue reconciling other VMs after a power operation fails.
 	var errs []error
 	for _, vm := range vms {
 		op, pending := s.powerOperation(*vm.Properties.VMID)
@@ -358,16 +406,24 @@ func (s *ScaleSet) reconcileSuspendedPower(ctx context.Context, vms []*armcomput
 			continue
 		}
 
-		if err := s.reconcilePark(ctx, vm, op); err != nil {
+		var err error
+		if op.park {
+			err = s.reconcilePark(ctx, vm, op)
+		} else {
+			err = s.reconcileResume(ctx, vm, op, nodes[op.node.Name])
+		}
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// reconcilePark settles a scale-down park.
+// reconcilePark settles a park, and keeps re-parking a failed resume until the provider's own
+// Deallocate completes.
 func (s *ScaleSet) reconcilePark(ctx context.Context, vm *armcompute.VirtualMachineScaleSetVM, op suspendedPowerOperation) error {
-	parked := op.completed || isAuthoritativelyParked(vm)
+	// A Start may still run during a re-park, so only its own completed Deallocate parks the VM.
+	parked := op.completed || op.resumed.IsZero() && isAuthoritativelyParked(vm)
 	if !op.polling && parked {
 		if err := s.setNodeSuspended(ctx, op.node, true); err != nil && !nodeGone(err) {
 			return err
@@ -382,13 +438,103 @@ func (s *ScaleSet) reconcilePark(ctx context.Context, vm *armcompute.VirtualMach
 		return nil
 	}
 	// Retire an unconfirmed or failed park only once provisioning settles.
-	state := suspendedPowerState(vm)
-	provisioning := ptr.Deref(vm.Properties.ProvisioningState, "")
-	if (state == vmPowerStateRunning || state == vmPowerStateStopped || state == vmPowerStateDeallocated) &&
-		(provisioning == provisioningStateSucceeded || provisioning == VMProvisioningStateFailed) {
-		s.forgetPower(vm)
+	if op.resumed.IsZero() {
+		state := suspendedPowerState(vm)
+		provisioning := ptr.Deref(vm.Properties.ProvisioningState, "")
+		if (state == vmPowerStateRunning || state == vmPowerStateStopped || state == vmPowerStateDeallocated) &&
+			(provisioning == provisioningStateSucceeded || provisioning == VMProvisioningStateFailed) {
+			s.forgetPower(vm)
+		}
+		return nil
 	}
+
+	// Only re-park a failed resume while its Node is retained.
+	current, err := s.manager.kubeClient.CoreV1().Nodes().Get(ctx, op.node.Name, metav1.GetOptions{})
+	if err == nil {
+		err = sameSuspendedNode(current, op.node)
+	}
+	vmID := *vm.Properties.VMID
+	if err == nil {
+		// Record the re-park before any Deallocate, so a restart does not resume the VM.
+		if marker, _ := nodeResumeMarker(current); !marker.Repark {
+			err = s.setResumeMarker(ctx, op.node, &resumeMarker{
+				VMID: vmID, NodeUID: op.node.UID, Started: op.resumed, Repark: true,
+			})
+		}
+	}
+	if nodeGone(err) {
+		s.forgetPower(vm)
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	// Deallocate is safe to repeat. Azure may accept or reject it while a Start runs; a later loop retries a rejection.
+	submitCtx, cancel := context.WithTimeout(ctx, vmssContextTimeout)
+	defer cancel()
+	poller, err := s.manager.azClient.vmssPowerClient.BeginDeallocate(
+		submitCtx, s.manager.config.ResourceGroup, s.Name, *vm.InstanceID, nil)
+	if err != nil {
+		return fmt.Errorf("re-park node %s: %w", op.node.Name, err)
+	}
+	if poller == nil {
+		return fmt.Errorf("re-park node %s has uncertain acceptance: no operation returned", op.node.Name)
+	}
+
+	// Track the new Deallocate and poll it in the background.
+	sequence := s.recordPower(vmID, suspendedPowerOperation{
+		node: op.node, park: true, polling: true, resumed: op.resumed,
+	})
+	go waitForSuspendedPower(s, poller, vmID, *vm.ID, sequence)
 	return nil
+}
+
+// reconcileResume unsuspends a resumed Node once it is Ready, or re-parks it and backs off
+// the group when the Start fails or the resume outlives MaxNodeProvisionTime.
+func (s *ScaleSet) reconcileResume(ctx context.Context, vm *armcompute.VirtualMachineScaleSetVM, op suspendedPowerOperation, current *apiv1.Node) error {
+	// Stop tracking if the Node was deleted or replaced, or its marker was cleared.
+	if current == nil || nodeGone(sameSuspendedNode(current, op.node)) || current.Annotations[resumeMarkerAnnotation] == "" {
+		s.forgetPower(vm)
+		return nil
+	}
+
+	// Unsuspend once Azure reports Running with provisioning Succeeded and the Node is Ready.
+	running := suspendedPowerState(vm) == vmPowerStateRunning &&
+		ptr.Deref(vm.Properties.ProvisioningState, "") == provisioningStateSucceeded
+	if !op.failed && running {
+		if readiness, err := kubernetes.GetNodeReadiness(current); err == nil && readiness.Ready {
+			// The resume is forgotten once a later read no longer finds the marker.
+			return s.setNodeSuspended(ctx, current, false)
+		}
+	}
+	// Otherwise wait until MaxNodeProvisionTime from the marker.
+	timeout := s.resumeTimeout(ctx)
+	if !op.failed && time.Now().Before(op.resumed.Add(timeout)) {
+		return nil
+	}
+
+	// The resume failed: queue one failure for backoff and re-park the VM.
+	errorInfo := cloudprovider.InstanceErrorInfo{
+		ErrorClass: cloudprovider.OtherErrorClass, ErrorCode: "start-deallocated-timeout",
+		ErrorMessage: fmt.Sprintf("Deallocated VM did not become ready within %v", timeout),
+	}
+	if op.failed && time.Now().Before(op.resumed.Add(timeout)) {
+		errorInfo = cloudprovider.InstanceErrorInfo{
+			ErrorClass: cloudprovider.OutOfResourcesErrorClass, ErrorCode: "start-deallocated-failed",
+			ErrorMessage: "Failed to start deallocated VM",
+		}
+	}
+	klog.Warningf("Resume of node %s failed: %s, re-parking it", current.Name, errorInfo.ErrorMessage)
+	op = suspendedPowerOperation{node: op.node, park: true, resumed: op.resumed}
+	s.recordPower(*vm.Properties.VMID, op)
+	s.manager.queueResumeFailure(s, errorInfo)
+	return s.reconcilePark(ctx, vm, op)
+}
+
+func (s *ScaleSet) resumeTimeout(ctx context.Context) time.Duration {
+	// Deallocate groups always return options.
+	options, _ := s.GetOptions(ctx, s.manager.nodeGroupDefaults)
+	return options.MaxNodeProvisionTime
 }
 
 // reconcileSuspendedNodes runs on every Refresh and reconciles each Deallocate group. The groups
@@ -427,23 +573,31 @@ func (m *AzureManager) reconcileSuspendedNodes() error {
 	return nil
 }
 
-// reconcileSuspendedNodes repairs suspension metadata at most once per instance refresh period,
-// then settles the group's pending power operations.
+// reconcileSuspendedNodes rebuilds resumes from markers and repairs suspension metadata at most once
+// per instance refresh period, then settles the group's pending power operations.
 func (s *ScaleSet) reconcileSuspendedNodes(ctx context.Context, listNodes func() (*apiv1.NodeList, error)) error {
 	if !s.parkMutex.TryLock() {
 		return nil
 	}
 	defer s.parkMutex.Unlock()
-	vms, err := s.suspendedInventory(ctx, false)
+	// Resumes wait for running VMs, so keep their instance view fresh.
+	vms, err := s.suspendedInventory(ctx, s.hasResumes())
 	if err != nil {
 		return err
 	}
 
-	if !s.suspendedReconcileTime.Add(s.instancesRefreshPeriod).After(time.Now()) {
-		nodeList, err := listNodes()
+	// Share the Node list between resume reconciliation and metadata repair.
+	repairMetadata := !s.suspendedReconcileTime.Add(s.instancesRefreshPeriod).After(time.Now())
+	var nodeList *apiv1.NodeList
+	if repairMetadata || s.hasResumes() {
+		nodeList, err = listNodes()
 		if err != nil {
 			return err
 		}
+	}
+	// Rebuild resumes before repairing metadata, so a resuming Node isn't mistaken for a stale one.
+	if repairMetadata {
+		s.trackResumes(ctx, vms, nodeList)
 		// Retry failed Node updates on the next loop without blocking other Nodes or groups.
 		if err := s.reconcileSettledSuspendedNodes(ctx, vms, nodeList); err != nil {
 			klog.Warningf("Failed to reconcile suspended metadata in %s: %v", s.Name, err)
@@ -452,8 +606,8 @@ func (s *ScaleSet) reconcileSuspendedNodes(ctx context.Context, listNodes func()
 		}
 	}
 
-	// Settle pending Deallocates on every loop.
-	if err := s.reconcileSuspendedPower(ctx, vms); err != nil {
+	// Settle pending Starts and Deallocates on every loop.
+	if err := s.reconcileSuspendedPower(ctx, vms, nodeList); err != nil {
 		klog.Warningf("Failed to reconcile power operations in %s: %v", s.Name, err)
 	}
 	return nil
@@ -583,6 +737,17 @@ func isTerminalPowerOperationFailure(err error) bool {
 	responseError, ok := errors.AsType[*azcore.ResponseError](err)
 	return ok &&
 		responseError.StatusCode >= http.StatusOK && responseError.StatusCode < http.StatusMultipleChoices
+}
+
+func waitForSuspendedPower[T any](s *ScaleSet, poller *runtime.Poller[T], vmID, resourceID string, sequence uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), asyncContextTimeout)
+	defer cancel()
+	_, err := poller.PollUntilDone(ctx, nil)
+	s.finishPowerPolling(vmID, sequence, err)
+	s.invalidateSuspendedInventory()
+	if err != nil {
+		klog.Errorf("Power operation on %s failed: %v", resourceID, err)
+	}
 }
 
 func (s *ScaleSet) invalidateSuspendedInventory() {

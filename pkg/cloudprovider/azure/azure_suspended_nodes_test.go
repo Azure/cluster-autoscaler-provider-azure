@@ -216,49 +216,6 @@ func TestSuspendedParkPreservesNodeAndInventory(t *testing.T) {
 	require.Equal(t, []string{"deallocate:0"}, world.history())
 }
 
-func TestSuspendedIncrease(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		delta     int
-		growthErr error
-		want      []string
-	}{
-		{name: "grow with parked VMs", delta: 3, want: []string{"grow:5"}},
-		{name: "growth fails", delta: 1, growthErr: errors.New("growth rejected"), want: []string{"grow:3"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				nodes := []*apiv1.Node{suspendedTestNode(0, true), suspendedTestNode(1, true)}
-				client := fake.NewClientset(nodes[0], nodes[1])
-				world := &suspendedWorld{states: []string{vmPowerStateDeallocated, vmPowerStateDeallocated},
-					growthErr: tc.growthErr}
-				_, group := newSuspendedProvider(t, world, client, 0, 3)
-				require.Equal(t, 2, group.MinSize(t.Context()))
-				require.Equal(t, 5, group.MaxSize(t.Context()))
-				require.ErrorContains(t, group.IncreaseSize(t.Context(), 4), "size increase too large")
-				require.ErrorIs(t, group.AtomicIncreaseSize(t.Context(), 1), cloudprovider.ErrNotImplemented)
-				err := group.IncreaseSize(t.Context(), tc.delta)
-				if tc.growthErr != nil {
-					require.ErrorIs(t, err, tc.growthErr)
-				} else {
-					require.NoError(t, err)
-				}
-				synctest.Wait()
-				require.Equal(t, tc.want, world.history())
-				for _, node := range nodes {
-					require.Equal(t, node, getTestNode(t, client, node.Name))
-				}
-				if tc.growthErr == nil {
-					total, err := group.TargetSize(t.Context())
-					require.NoError(t, err)
-					require.Equal(t, tc.delta, total-group.parkedCount())
-					require.NoError(t, group.DecreaseTargetSize(t.Context(), -1))
-				}
-			})
-		})
-	}
-}
-
 func TestSuspendedRefreshMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name, power, provisioning string

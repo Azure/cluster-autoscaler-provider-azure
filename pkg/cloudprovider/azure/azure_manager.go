@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider"
 	"sigs.k8s.io/cluster-autoscaler/pkg/config"
 	"sigs.k8s.io/cluster-autoscaler/pkg/config/dynamic"
+	"sigs.k8s.io/cluster-autoscaler/pkg/observers/nodegroupchange"
 )
 
 const (
@@ -88,6 +90,11 @@ type AzureManager struct {
 	explicitlyConfigured      map[string]bool
 	kubeClient                kubeclient.Interface
 	cordonNodeBeforeTerminate bool
+	// nodeGroupDefaults and scaleStateNotifier let deallocate groups time out resumes and back off.
+	nodeGroupDefaults  config.NodeGroupAutoscalingOptions
+	scaleStateNotifier *nodegroupchange.NodeGroupChangeObserversList
+	resumeFailureMutex sync.Mutex
+	resumeFailures     []resumeFailure
 }
 
 // createAzureManagerInternal allows for a custom azClient to be passed in by tests.

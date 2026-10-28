@@ -18,9 +18,11 @@ package azure
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
@@ -28,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
@@ -40,11 +43,27 @@ const (
 	suspendedTaintKey                                        = taints.StatusTaintPrefix + "azure-suspended"
 	scaleDownDisabledAnnotation                              = "cluster-autoscaler.kubernetes.io/scale-down-disabled"
 	scaleDownDisabledOwnerAnnotation                         = "cluster-autoscaler.kubernetes.io/azure-owns-scale-down-disabled"
+	resumeMarkerAnnotation                                   = "cluster-autoscaler.kubernetes.io/azure-resume"
 	parkedReason                                             = "AzureVMDeallocated"
 	resumedReason                                            = "AzureVMStarted"
 )
 
 var errNodeChangedIdentity = errors.New("changed identity")
+
+// resumeMarker records a Start on the retained Node, so a restarted provider keeps the resume and its deadline.
+type resumeMarker struct {
+	VMID    string    `json:"vmID"`
+	NodeUID types.UID `json:"nodeUID"`
+	Started time.Time `json:"started"`
+	// Repark records a failed resume, so a restart re-parks the VM instead of resuming it.
+	Repark bool `json:"repark,omitempty"`
+}
+
+func nodeResumeMarker(node *apiv1.Node) (resumeMarker, bool) {
+	var marker resumeMarker
+	value, marked := node.Annotations[resumeMarkerAnnotation]
+	return marker, marked && json.Unmarshal([]byte(value), &marker) == nil
+}
 
 type suspendedParkOperation struct {
 	sequence uint64
@@ -145,7 +164,7 @@ func (s *ScaleSet) submitSuspendedParking(ctx context.Context, nodes []*apiv1.No
 	}
 
 	// Other VMs' operations must not block this scale-down; pending ones are refused below.
-	if err := s.reconcileSuspendedPower(ctx, vms); err != nil {
+	if err := s.reconcileSuspendedPower(ctx, vms, nil); err != nil {
 		klog.Warningf("Failed to reconcile power operations in %s: %v", s.Name, err)
 	}
 
@@ -166,8 +185,9 @@ func (s *ScaleSet) submitSuspendedParking(ctx context.Context, nodes []*apiv1.No
 			return nil, err
 		}
 
+		// The provider settles its own resumes and re-parks.
 		op, pending := s.powerOperation(*vm.Properties.VMID)
-		if pending && (op.polling || !op.park || !op.failed && !op.completed) {
+		if pending && (op.polling || !op.park || !op.resumed.IsZero() || !op.failed && !op.completed) {
 			return nil, fmt.Errorf("power operation pending for %s", node.Name)
 		}
 		state := suspendedPowerState(vm)
@@ -255,18 +275,19 @@ func (s *ScaleSet) finishSuspendedParking(ctx context.Context, operation suspend
 
 	for _, vm := range vms {
 		if *vm.Properties.VMID == operation.vmID {
-			return s.reconcileSuspendedPower(ctx, []*armcompute.VirtualMachineScaleSetVM{vm})
+			return s.reconcileSuspendedPower(ctx, []*armcompute.VirtualMachineScaleSetVM{vm}, nil)
 		}
 	}
 	return fmt.Errorf("VM %s changed identity during deallocation", operation.vmID)
 }
 
-// increaseSuspended grows capacity without starting parked VMs.
+// increaseSuspended starts parked VMs before growing capacity. A resumed Node stays suspended until it is Ready.
 func (s *ScaleSet) increaseSuspended(ctx context.Context, delta int) error {
 	if delta <= 0 {
 		return fmt.Errorf("size increase must be positive")
 	}
 
+	parentCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, vmssContextTimeout)
 	defer cancel()
 	if s.manager.kubeClient == nil || s.manager.azClient.vmssPowerClient == nil {
@@ -282,7 +303,7 @@ func (s *ScaleSet) increaseSuspended(ctx context.Context, delta int) error {
 	}
 
 	// Settle other operations without letting their errors block the scale-up, then check the maximum.
-	if err := s.reconcileSuspendedPower(ctx, vms); err != nil {
+	if err := s.reconcileSuspendedPower(ctx, vms, nil); err != nil {
 		klog.Warningf("Failed to reconcile power operations in %s: %v", s.Name, err)
 	}
 	physical, err := s.canIncreaseSize(delta)
@@ -290,19 +311,106 @@ func (s *ScaleSet) increaseSuspended(ctx context.Context, delta int) error {
 		return err
 	}
 
-	// Only confirmed parks provide headroom above the configured maximum.
+	nodeList, err := s.manager.kubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list nodes before scale-up: %w", err)
+	}
+
+	nodes := make(map[string]*apiv1.Node, len(nodeList.Items))
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
+		nodes[normalizeProviderID(node.Spec.ProviderID)] = node
+	}
+
+	// Only confirmed parks provide headroom for resumes or growth.
 	unconfirmed := 0
 	for _, vm := range vms {
 		op, pending := s.powerOperation(*vm.Properties.VMID)
+		// A recorded re-park doesn't block growth, even after a restart: its VM counts as parked
+		// and the re-park may be retried indefinitely.
+		if node := nodes[normalizeProviderID(azurePrefix+*vm.ID)]; pending && op.park && node != nil {
+			if marker, _ := nodeResumeMarker(node); !op.resumed.IsZero() && marker.Repark {
+				continue
+			}
+		}
 		if pending && op.park && !op.completed && !op.failed {
 			unconfirmed++
 		}
 	}
 	if int(physical)+delta > s.maxSize+s.parkedCount()-unconfirmed {
-		return fmt.Errorf("parking is still in progress for %s; refusing replacement growth", s.Name)
+		return fmt.Errorf("parking is still in progress for %s; refusing size increase", s.Name)
 	}
+
+	// Start parked VMs until the demand is met.
+	var rejections error
+	for _, vm := range vms {
+		if delta == 0 || !s.effectivelyParked(vm) {
+			continue
+		}
+		vmID := *vm.Properties.VMID
+		if _, pending := s.powerOperation(vmID); pending {
+			continue
+		}
+		// Only a VM with a retained Node can resume.
+		node := nodes[normalizeProviderID(azurePrefix+*vm.ID)]
+		if node == nil {
+			continue
+		}
+
+		submitCtx, submitCancel := context.WithTimeout(parentCtx, vmssContextTimeout)
+		// Suspend a Node that metadata repair hasn't reached yet, such as after a Spot eviction.
+		if !hasSuspendedMetadata(node) {
+			if err := s.setNodeSuspended(submitCtx, node, true); err != nil {
+				submitCancel()
+				return errors.Join(rejections, err)
+			}
+		}
+
+		// Record the resume before Start so a restart cannot lose an accepted Start.
+		marker := resumeMarker{VMID: vmID, NodeUID: node.UID, Started: time.Now()}
+		if err := s.setResumeMarker(submitCtx, node, &marker); err != nil {
+			submitCancel()
+			return errors.Join(rejections, err)
+		}
+		poller, err := s.manager.azClient.vmssPowerClient.BeginStart(
+			submitCtx, s.manager.config.ResourceGroup, s.Name, *vm.InstanceID, nil)
+		if err != nil && isDefinitePowerRejection(err) {
+			rejection := fmt.Errorf("start %s: %w", *vm.ID, err)
+			klog.Warningf("Start rejected for %s: %v", *vm.ID, err)
+			rejections = errors.Join(rejections, rejection)
+			err := s.setResumeMarker(submitCtx, node, nil)
+			submitCancel()
+			if err != nil {
+				return errors.Join(rejections, err)
+			}
+			continue
+		}
+		submitCancel()
+
+		sequence := s.recordPower(vmID, suspendedPowerOperation{
+			node: node.DeepCopy(), polling: poller != nil, resumed: marker.Started,
+		})
+		if poller != nil {
+			resourceID := *vm.ID
+			go waitForSuspendedPower(s, poller, vmID, resourceID, sequence)
+		}
+
+		if err != nil || poller == nil {
+			if err == nil {
+				err = fmt.Errorf("no operation returned")
+			}
+			return fmt.Errorf("start %s has uncertain acceptance: %w", *vm.ID, err)
+		}
+
+		delta--
+	}
+
+	if delta == 0 {
+		return nil
+	}
+
 	if err := s.setScaleSetSize(physical+int64(delta), delta); err != nil {
-		return err
+		return errors.Join(rejections, err)
 	}
 
 	return nil
@@ -314,6 +422,31 @@ func (s *ScaleSet) checkNodeIdentity(ctx context.Context, node *apiv1.Node) erro
 		return err
 	}
 	return sameSuspendedNode(current, node)
+}
+
+// trackResumes rebuilds in-flight resumes from Node markers, such as after a restart.
+func (s *ScaleSet) trackResumes(ctx context.Context, vms []*armcompute.VirtualMachineScaleSetVM, nodeList *apiv1.NodeList) {
+	byProviderID := make(map[string]*armcompute.VirtualMachineScaleSetVM, len(vms))
+	for _, vm := range vms {
+		byProviderID[normalizeProviderID(azurePrefix+*vm.ID)] = vm
+	}
+
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
+		marker, marked := nodeResumeMarker(node)
+		vm := byProviderID[normalizeProviderID(node.Spec.ProviderID)]
+		if !marked || vm == nil || marker.VMID != *vm.Properties.VMID || marker.NodeUID != node.UID {
+			continue
+		}
+		if _, pending := s.powerOperation(marker.VMID); !pending {
+			// A re-park may have been running before the restart, so a recorded re-park or an
+			// expired resume is re-parked even if its Node is now Ready.
+			expired := !time.Now().Before(marker.Started.Add(s.resumeTimeout(ctx)))
+			s.recordPower(marker.VMID, suspendedPowerOperation{
+				node: node.DeepCopy(), resumed: marker.Started, failed: marker.Repark || expired,
+			})
+		}
+	}
 }
 
 // reconcileSettledSuspendedNodes repairs suspension metadata from settled instance views: a parked
@@ -412,8 +545,36 @@ func nodeGone(err error) bool {
 	return apierrors.IsNotFound(err) || errors.Is(err, errNodeChangedIdentity)
 }
 
+// setResumeMarker records marker on the Node, or removes it when marker is nil.
+func (s *ScaleSet) setResumeMarker(ctx context.Context, node *apiv1.Node, marker *resumeMarker) error {
+	client := s.manager.kubeClient.CoreV1().Nodes()
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := client.Get(ctx, node.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if err := sameSuspendedNode(current, node); err != nil {
+			return err
+		}
+
+		if marker == nil {
+			delete(current.Annotations, resumeMarkerAnnotation)
+		} else {
+			value, _ := json.Marshal(marker)
+			metav1.SetMetaDataAnnotation(&current.ObjectMeta, resumeMarkerAnnotation, string(value))
+		}
+		_, err = client.Update(ctx, current, metav1.UpdateOptions{})
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("update resume marker on node %s: %w", node.Name, err)
+	}
+	return nil
+}
+
 // setNodeSuspended sets or clears a Node's Suspended condition, suspended taint and scale-down-disabled
-// annotation. Suspending also removes core's deletion taints and any cordon core added.
+// annotation, and removes its resume marker. Suspending also removes core's deletion taints and any
+// cordon core added.
 func (s *ScaleSet) setNodeSuspended(ctx context.Context, node *apiv1.Node, suspended bool) error {
 	client := s.manager.kubeClient.CoreV1().Nodes()
 	status, reason := apiv1.ConditionFalse, resumedReason
@@ -479,6 +640,7 @@ func (s *ScaleSet) setNodeSuspended(ctx context.Context, node *apiv1.Node, suspe
 			}
 			delete(updated.Annotations, scaleDownDisabledOwnerAnnotation)
 		}
+		delete(updated.Annotations, resumeMarkerAnnotation)
 
 		updated.Spec.Taints = kept
 		if equality.Semantic.DeepEqual(current, updated) {

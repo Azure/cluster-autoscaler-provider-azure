@@ -65,8 +65,11 @@ type suspendedWorld struct {
 	provisioning   map[int]string
 	deleted        map[int]bool
 	events         []string
+	startError     map[int]error
 	parkError      map[int]error
 	nilPark        bool
+	nilStart       bool
+	startResult    func(int) error
 	parkResult     func(int) error
 	inventoryErr   error
 	inventoryReads int
@@ -320,6 +323,36 @@ func (ws suspendedWorlds) world(name string) (*suspendedWorld, error) {
 		}
 	}
 	return nil, fmt.Errorf("unexpected VMSS %s", name)
+}
+
+func (ws suspendedWorlds) BeginStart(
+	_ context.Context, _, name, id string,
+	_ *armcompute.VirtualMachineScaleSetVMsClientBeginStartOptions,
+) (*azruntime.Poller[armcompute.VirtualMachineScaleSetVMsClientStartResponse], error) {
+	w, err := ws.world(name)
+	if err != nil {
+		return nil, err
+	}
+	i, err := strconv.Atoi(id)
+	if err != nil {
+		return nil, err
+	}
+
+	w.mu.Lock()
+	w.events = append(w.events, "start:"+id)
+	err, nilPoller := w.startError[i], w.nilStart
+	w.mu.Unlock()
+	if err != nil || nilPoller {
+		return nil, err
+	}
+	return suspendedTestPoller[armcompute.VirtualMachineScaleSetVMsClientStartResponse](func() error {
+		if w.startResult != nil {
+			return w.startResult(i)
+		}
+
+		w.setPowerState(i, vmPowerStateRunning)
+		return nil
+	})
 }
 
 func (ws suspendedWorlds) BeginDeallocate(
