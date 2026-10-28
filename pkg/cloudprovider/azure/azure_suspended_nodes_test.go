@@ -216,6 +216,90 @@ func TestSuspendedParkPreservesNodeAndInventory(t *testing.T) {
 	require.Equal(t, []string{"deallocate:0"}, world.history())
 }
 
+func TestSuspendedIncrease(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		delta     int
+		rejected  []int
+		missing   bool
+		growthErr error
+		want      []string
+	}{
+		{name: "resume before growth", delta: 3, want: []string{"start:0", "start:1", "grow:3"}},
+		{name: "rejection then next", delta: 1, rejected: []int{0}, want: []string{"start:0", "start:1"}},
+		{name: "partial acceptance", delta: 2, rejected: []int{1}, want: []string{"start:0", "start:1", "grow:3"}},
+		{name: "all rejected", delta: 1, rejected: []int{0, 1}, want: []string{"start:0", "start:1", "grow:3"}},
+		{name: "growth also fails", delta: 1, rejected: []int{0, 1}, growthErr: errors.New("growth rejected"),
+			want: []string{"start:0", "start:1", "grow:3"}},
+		{name: "retained Node required", delta: 2, missing: true, want: []string{"start:1", "grow:3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				nodes := []*apiv1.Node{suspendedTestNode(0, true), suspendedTestNode(1, true)}
+				client := fake.NewClientset(nodes[0], nodes[1])
+				if tc.missing {
+					require.NoError(t, client.CoreV1().Nodes().Delete(t.Context(), nodes[0].Name, metav1.DeleteOptions{}))
+				}
+				world := &suspendedWorld{states: []string{vmPowerStateDeallocated, vmPowerStateDeallocated},
+					startError: map[int]error{}, growthErr: tc.growthErr}
+				for _, id := range tc.rejected {
+					world.startError[id] = &azcore.ResponseError{StatusCode: http.StatusBadRequest}
+				}
+				_, group := newSuspendedProvider(t, world, client, 0, 3)
+				require.Equal(t, 2, group.MinSize(t.Context()))
+				require.Equal(t, 5, group.MaxSize(t.Context()))
+				require.ErrorContains(t, group.IncreaseSize(t.Context(), 4), "size increase too large")
+				require.ErrorIs(t, group.AtomicIncreaseSize(t.Context(), 1), cloudprovider.ErrNotImplemented)
+				err := group.IncreaseSize(t.Context(), tc.delta)
+				if tc.growthErr != nil {
+					require.ErrorIs(t, err, tc.growthErr)
+					for _, id := range tc.rejected {
+						require.ErrorContains(t, err, nodes[id].Spec.ProviderID[len(azurePrefix):])
+					}
+				} else {
+					require.NoError(t, err)
+				}
+				synctest.Wait()
+				require.Equal(t, tc.want, world.history())
+				for _, id := range tc.rejected {
+					require.Equal(t, nodes[id], getTestNode(t, client, nodes[id].Name))
+				}
+				if tc.growthErr == nil {
+					total, err := group.TargetSize(t.Context())
+					require.NoError(t, err)
+					require.Equal(t, tc.delta, total-group.parkedCount())
+					require.NoError(t, group.DecreaseTargetSize(t.Context(), -1))
+					require.True(t, group.hasResumes() || len(tc.rejected) == 2)
+				}
+			})
+		})
+	}
+}
+
+func TestSuspendedIncreaseUncertainStartStops(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		nilPoller bool
+	}{
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "conflict", err: &azcore.ResponseError{StatusCode: http.StatusConflict}},
+		{name: "missing poller", nilPoller: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nodes := []*apiv1.Node{suspendedTestNode(0, true), suspendedTestNode(1, true)}
+			client := fake.NewClientset(nodes[0], nodes[1])
+			world := &suspendedWorld{states: []string{vmPowerStateDeallocated, vmPowerStateDeallocated},
+				startError: map[int]error{0: tc.err}, nilStart: tc.nilPoller}
+			_, group := newSuspendedProvider(t, world, client, 0, 3)
+			require.ErrorContains(t, group.IncreaseSize(t.Context(), 2), "uncertain acceptance")
+			require.Equal(t, []string{"start:0"}, world.history())
+			require.Equal(t, 1, group.parkedCount())
+			require.Contains(t, getTestNode(t, client, nodes[0].Name).Annotations, resumeMarkerAnnotation)
+		})
+	}
+}
+
 func TestSuspendedRefreshMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name, power, provisioning string
@@ -226,8 +310,10 @@ func TestSuspendedRefreshMetadata(t *testing.T) {
 	}{
 		{name: "park", power: vmPowerStateDeallocated, want: apiv1.ConditionTrue},
 		{name: "complete park", power: vmPowerStateDeallocated, suspended: true, want: apiv1.ConditionTrue},
-		{name: "externally started", power: vmPowerStateRunning, suspended: true, want: apiv1.ConditionFalse},
+		{name: "resume without marker", power: vmPowerStateRunning, suspended: true, want: apiv1.ConditionFalse},
 		{name: "ordinary running", power: vmPowerStateRunning},
+		{name: "pending Start deallocated", power: vmPowerStateDeallocated, suspended: true, pending: true, want: apiv1.ConditionTrue},
+		{name: "pending Start updating", power: vmPowerStateRunning, provisioning: "Updating", suspended: true, pending: true, want: apiv1.ConditionTrue},
 		{name: "running updating", power: vmPowerStateRunning, provisioning: "Updating", suspended: true, want: apiv1.ConditionTrue},
 		{name: "pending park", power: vmPowerStateDeallocated, pending: true, park: true},
 		{name: "starting", power: vmPowerStateStarting, suspended: true, want: apiv1.ConditionTrue},
@@ -238,7 +324,7 @@ func TestSuspendedRefreshMetadata(t *testing.T) {
 			mutate: func(n *apiv1.Node) { n.Status.Conditions = nil }},
 		{name: "partial park retries", power: vmPowerStateDeallocated, suspended: true, failUpdate: true, want: apiv1.ConditionTrue,
 			mutate: func(n *apiv1.Node) { n.Spec.Taints, n.Annotations = nil, nil }},
-		{name: "partial clearing retries", power: vmPowerStateRunning, suspended: true, failUpdate: true, want: apiv1.ConditionFalse,
+		{name: "partial resume retries", power: vmPowerStateRunning, suspended: true, failUpdate: true, want: apiv1.ConditionFalse,
 			mutate: func(n *apiv1.Node) { setSuspendedCondition(n, apiv1.ConditionFalse, resumedReason, metav1.Now()) }},
 		{name: "wrong taint", power: vmPowerStateDeallocated, suspended: true, want: apiv1.ConditionTrue,
 			mutate: func(n *apiv1.Node) { n.Spec.Taints[0].Effect = apiv1.TaintEffectNoExecute }},
@@ -265,7 +351,10 @@ func TestSuspendedRefreshMetadata(t *testing.T) {
 			}
 			group.deallocate = !tc.deleteMode
 			if tc.pending {
-				group.recordPower("vm-0", suspendedPowerOperation{node: node, park: tc.park, polling: tc.park})
+				if !tc.park {
+					require.NoError(t, group.setResumeMarker(t.Context(), node, &resumeMarker{VMID: "vm-0", NodeUID: node.UID, Started: time.Now()}))
+				}
+				group.recordPower("vm-0", suspendedPowerOperation{node: node, resumed: time.Now(), park: tc.park, polling: tc.park})
 			}
 			fail := tc.failUpdate
 			client.PrependReactor("update", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
@@ -377,6 +466,24 @@ func TestSuspendedUnconfirmedParkReleasesGroup(t *testing.T) {
 	}
 }
 
+func TestSuspendedResumeSuspendsUnrepairedNode(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		node := suspendedTestNode(1, false)
+		client := fake.NewClientset(node)
+		world := &suspendedWorld{states: []string{vmPowerStateRunning, vmPowerStateRunning}}
+		_, group := newSuspendedProvider(t, world, client, 1, 2)
+		// The VM is evicted after the last metadata repair, then resumed.
+		world.setPowerState(1, vmPowerStateDeallocated)
+		require.NoError(t, group.IncreaseSize(t.Context(), 1))
+		synctest.Wait()
+
+		resuming := getTestNode(t, client, node.Name)
+		require.True(t, hasSuspendedMetadata(resuming))
+		require.Contains(t, resuming.Annotations, resumeMarkerAnnotation)
+		require.Equal(t, []string{"start:1"}, world.history())
+	})
+}
+
 func TestSuspendedSpotEviction(t *testing.T) {
 	for _, policy := range []armcompute.VirtualMachineEvictionPolicyTypes{
 		armcompute.VirtualMachineEvictionPolicyTypesDeallocate, armcompute.VirtualMachineEvictionPolicyTypesDelete,
@@ -413,6 +520,12 @@ func TestSuspendedSpotEviction(t *testing.T) {
 					require.True(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)))
 					require.Equal(t, 2, group.MinSize(t.Context()))
 					require.Equal(t, 3, group.MaxSize(t.Context()))
+					require.NoError(t, group.IncreaseSize(t.Context(), 1))
+					synctest.Wait()
+					markSuspendedNodeReady(t, client, node.Name)
+					require.NoError(t, provider.Refresh(t.Context()))
+					require.False(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)))
+					require.Equal(t, []string{"start:1"}, world.history())
 				}
 			})
 		})
@@ -431,7 +544,12 @@ func TestSuspendedRunningMinimum(t *testing.T) {
 		require.Equal(t, 5, group.MaxSize(t.Context()))
 		require.ErrorContains(t, group.DeleteNodes(t.Context(), nodes[2:]), "min size reached")
 		require.NoError(t, group.DeleteNodes(t.Context(), nodes[:1]))
-		require.Equal(t, []string{"deallocate:0", "deallocate:1"}, world.history())
+		require.NoError(t, group.IncreaseSize(t.Context(), 2), "parked VMs resume at configured maximum")
+		synctest.Wait()
+		require.Equal(t, 1, group.MinSize(t.Context()))
+		require.Equal(t, 3, group.MaxSize(t.Context()))
+		require.ErrorContains(t, group.IncreaseSize(t.Context(), 1), "size increase too large")
+		require.Equal(t, []string{"deallocate:0", "deallocate:1", "start:0", "start:1"}, world.history())
 	})
 }
 
@@ -532,31 +650,171 @@ func TestSuspendedParkSubmission(t *testing.T) {
 	}
 }
 
-func TestSuspendedFailingParkAllowsOtherOperations(t *testing.T) {
-	node, active := suspendedTestNode(0, false), suspendedTestNode(1, false)
-	client := fake.NewClientset(node, active)
-	world := &suspendedWorld{states: []string{vmPowerStateRunning, vmPowerStateRunning}}
-	_, group := newSuspendedProvider(t, world, client, 0, 2)
-	group.recordPower("vm-0", suspendedPowerOperation{node: node, park: true, completed: true})
-	client.PrependReactor("update", "nodes", func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if action.(clienttesting.UpdateAction).GetObject().(*apiv1.Node).Name == node.Name {
-			return true, nil, errors.New("metadata unavailable")
-		}
-		return false, nil, nil
+func TestSuspendedReparkConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		submitErr error
+		nilPoller bool
+		stalled   bool
+	}{
+		{name: "rejected", submitErr: &azcore.ResponseError{StatusCode: http.StatusConflict}},
+		{name: "missing poller", nilPoller: true},
+		{name: "stalled Deallocate", stalled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				node := suspendedTestNode(0, true)
+				client := fake.NewClientset(node)
+				finish := make(chan struct{})
+				defer close(finish)
+				world := &suspendedWorld{states: []string{vmPowerStateDeallocated},
+					parkError: map[int]error{0: tc.submitErr}, nilPark: tc.nilPoller}
+				if tc.stalled {
+					world.parkResult = func(int) error { <-finish; return context.DeadlineExceeded }
+				}
+				provider, group := newSuspendedProvider(t, world, client, 0, 1)
+				started := time.Now().Add(-time.Minute)
+				require.NoError(t, group.setResumeMarker(t.Context(), node, &resumeMarker{VMID: "vm-0", NodeUID: node.UID, Started: started, Repark: true}))
+				group.recordPower("vm-0", suspendedPowerOperation{node: node, park: true, resumed: started})
+				for range 2 {
+					require.NoError(t, provider.Refresh(t.Context()))
+					synctest.Wait()
+					op, pending := group.powerOperation("vm-0")
+					require.True(t, pending, "a deallocated view cannot settle a re-park")
+					require.Equal(t, tc.stalled, op.polling)
+					require.True(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)), "Ready does not cancel a re-park")
+				}
+				if tc.stalled {
+					require.Equal(t, []string{"deallocate:0"}, world.history(), "no resubmission while polling")
+					finish <- struct{}{}
+					synctest.Wait()
+				} else {
+					require.Equal(t, []string{"deallocate:0", "deallocate:0"}, world.history())
+				}
+				world.mu.Lock()
+				world.parkError, world.nilPark, world.parkResult = nil, false, nil
+				world.mu.Unlock()
+				require.NoError(t, provider.Refresh(t.Context()))
+				synctest.Wait()
+				require.NoError(t, provider.Refresh(t.Context()))
+				require.True(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)))
+				require.NotContains(t, getTestNode(t, client, node.Name).Annotations, resumeMarkerAnnotation)
+				require.Empty(t, group.pendingPower)
+			})
+		})
+	}
+}
+
+func TestSuspendedReparkMarkerFailureSubmitsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		node := suspendedTestNode(0, true)
+		client := fake.NewClientset(node)
+		world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+		provider, group := newSuspendedProvider(t, world, client, 0, 1)
+		started := time.Now().Add(-time.Minute)
+		require.NoError(t, group.setResumeMarker(t.Context(), node, &resumeMarker{VMID: "vm-0", NodeUID: node.UID, Started: started}))
+		group.recordPower("vm-0", suspendedPowerOperation{node: node, park: true, resumed: started})
+		fail := true
+		client.PrependReactor("update", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
+			if fail {
+				return true, nil, errors.New("metadata unavailable")
+			}
+			return false, nil, nil
+		})
+		require.NoError(t, provider.Refresh(t.Context()))
+		require.ErrorContains(t, group.IncreaseSize(t.Context(), 1), "parking is still in progress")
+		require.Empty(t, world.history())
+		fail = false
+		require.NoError(t, provider.Refresh(t.Context()))
+		marker, marked := nodeResumeMarker(getTestNode(t, client, node.Name))
+		require.True(t, marked)
+		require.True(t, marker.Repark)
+		require.Equal(t, []string{"deallocate:0"}, world.history())
+		synctest.Wait()
+		require.NoError(t, provider.Refresh(t.Context()))
+		require.NotContains(t, getTestNode(t, client, node.Name).Annotations, resumeMarkerAnnotation)
 	})
-	require.NoError(t, group.DeleteNodes(t.Context(), []*apiv1.Node{active}))
-	require.True(t, hasSuspendedMetadata(getTestNode(t, client, active.Name)))
-	require.Equal(t, []string{"deallocate:1"}, world.history())
+}
+
+func TestSuspendedFailingReparkAllowsOtherOperations(t *testing.T) {
+	for _, action := range []string{"scale down", "running minimum", "growth"} {
+		t.Run(action, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				node, active := suspendedTestNode(0, true), suspendedTestNode(1, false)
+				client := fake.NewClientset(node, active)
+				world := &suspendedWorld{states: []string{vmPowerStateRunning, vmPowerStateRunning},
+					parkResult: func(int) error { return &azcore.ResponseError{StatusCode: http.StatusOK} }}
+				minimum := 0
+				if action == "running minimum" {
+					minimum = 1
+				}
+				provider, group := newSuspendedProvider(t, world, client, minimum, 2)
+				started := time.Now().Add(-time.Minute)
+				require.NoError(t, group.setResumeMarker(t.Context(), node, &resumeMarker{VMID: "vm-0", NodeUID: node.UID, Started: started, Repark: true}))
+				group.recordPower("vm-0", suspendedPowerOperation{node: node, park: true, resumed: started})
+				require.NoError(t, provider.Refresh(t.Context()))
+				synctest.Wait()
+				world.mu.Lock()
+				world.parkError, world.parkResult = map[int]error{0: errors.New("re-park unavailable")}, nil
+				world.mu.Unlock()
+				switch action {
+				case "scale down":
+					require.NoError(t, group.DeleteNodes(t.Context(), []*apiv1.Node{active}))
+					require.True(t, hasSuspendedMetadata(getTestNode(t, client, active.Name)))
+				case "running minimum":
+					require.ErrorContains(t, group.DeleteNodes(t.Context(), []*apiv1.Node{active}), "min size reached")
+					require.Equal(t, vmPowerStateRunning, world.states[1])
+				case "growth":
+					require.NoError(t, group.IncreaseSize(t.Context(), 1))
+					require.Contains(t, world.history(), "grow:3")
+				}
+				require.Contains(t, getTestNode(t, client, node.Name).Annotations, resumeMarkerAnnotation)
+			})
+		})
+	}
+}
+
+func TestSuspendedRestartKeepsEarlyRepark(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		node := suspendedTestNode(0, true)
+		client := fake.NewClientset(node)
+		world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+		_, original := newSuspendedProvider(t, world, client, 0, 1)
+		require.NoError(t, original.setResumeMarker(t.Context(), node, &resumeMarker{
+			VMID: "vm-0", NodeUID: node.UID, Started: time.Now().Add(-time.Minute), Repark: true,
+		}))
+		restarted, _ := newSuspendedProvider(t, world, client, 0, 1)
+		require.NoError(t, restarted.Refresh(t.Context()))
+		synctest.Wait()
+		require.NoError(t, restarted.Refresh(t.Context()))
+		require.True(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)), "a Ready Node with an early re-park marker is not resumed")
+		require.NotContains(t, getTestNode(t, client, node.Name).Annotations, resumeMarkerAnnotation)
+		require.Equal(t, []string{"deallocate:0"}, world.history())
+	})
+}
+
+// markSuspendedNodeReady reports a booted kubelet while keeping the suspension metadata.
+func markSuspendedNodeReady(t *testing.T, client *fake.Clientset, name string) {
+	t.Helper()
+	node := getTestNode(t, client, name)
+	catest.RemoveNodeNotReadyTaint(node)
+	catest.SetNodeReadyState(node, true, time.Now())
+	node, err := client.CoreV1().Nodes().Update(t.Context(), node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	_, err = client.CoreV1().Nodes().UpdateStatus(t.Context(), node, metav1.UpdateOptions{})
+	require.NoError(t, err)
 }
 
 func TestSuspendedNodeUpdateRetriesAndFencing(t *testing.T) {
-	for _, kind := range []string{"conflict", "completed park replacement", "provider ID replaced", "missing"} {
+	for _, kind := range []string{"conflict", "UID replaced", "completed park replacement", "provider ID replaced", "missing", "marker write fails"} {
 		t.Run(kind, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				node := suspendedTestNode(0, true)
 				client := fake.NewClientset(node)
 				world := &suspendedWorld{states: []string{vmPowerStateRunning}}
 				provider, group := newSuspendedProvider(t, world, client, 0, 2)
+				marker := &resumeMarker{VMID: "vm-0", NodeUID: node.UID, Started: time.Now(), Repark: true}
+				require.NoError(t, group.setResumeMarker(t.Context(), node, marker))
 				current := getTestNode(t, client, node.Name)
 				switch kind {
 				case "UID replaced", "completed park replacement", "provider ID replaced", "missing":
@@ -570,9 +828,13 @@ func TestSuspendedNodeUpdateRetriesAndFencing(t *testing.T) {
 						}
 						_, err := client.CoreV1().Nodes().Update(t.Context(), current, metav1.UpdateOptions{})
 						require.NoError(t, err)
+						require.ErrorIs(t, group.setResumeMarker(t.Context(), node, marker), errNodeChangedIdentity)
 						require.ErrorIs(t, group.setNodeSuspended(t.Context(), node, true), errNodeChangedIdentity)
 					}
-					op := suspendedPowerOperation{node: node, park: true, completed: true}
+					op := suspendedPowerOperation{node: node, park: true, resumed: marker.Started}
+					if kind == "completed park replacement" {
+						op.resumed, op.completed = time.Time{}, true
+					}
 					group.recordPower("vm-0", op)
 					require.NoError(t, provider.Refresh(t.Context()))
 					require.Empty(t, group.pendingPower)
@@ -584,14 +846,23 @@ func TestSuspendedNodeUpdateRetriesAndFencing(t *testing.T) {
 					calls := 0
 					client.PrependReactor("update", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
 						calls++
+						if kind == "marker write fails" {
+							return true, nil, errors.New("metadata unavailable")
+						}
 						if calls == 1 {
 							return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, node.Name, errors.New("conflict"))
 						}
 						return false, nil, nil
 					})
-					require.NoError(t, group.setNodeSuspended(t.Context(), node, false))
-					require.GreaterOrEqual(t, calls, 2)
-					require.False(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)))
+					if kind == "marker write fails" {
+						world.setPowerState(0, vmPowerStateDeallocated)
+						require.ErrorContains(t, group.IncreaseSize(t.Context(), 1), "metadata unavailable")
+						require.Empty(t, world.history())
+					} else {
+						require.NoError(t, group.setNodeSuspended(t.Context(), node, false))
+						require.GreaterOrEqual(t, calls, 2)
+						require.False(t, hasSuspendedMetadata(getTestNode(t, client, node.Name)))
+					}
 				}
 			})
 		})

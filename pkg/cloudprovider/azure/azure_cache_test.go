@@ -81,10 +81,10 @@ func TestRegisterSuspendedConfiguredBounds(t *testing.T) {
 	world := &suspendedWorld{states: []string{vmPowerStateDeallocated, vmPowerStateRunning, vmPowerStateDeallocated}}
 	provider, group := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
 	manager := provider.azureManager
-	group.recordPower("vm-1", suspendedPowerOperation{park: true, polling: true})
+	group.recordPower("vm-0", suspendedPowerOperation{})
 
-	require.Equal(t, 3, group.MinSize(t.Context()))
-	require.Equal(t, 6, group.MaxSize(t.Context()))
+	require.Equal(t, 1, group.MinSize(t.Context()))
+	require.Equal(t, 4, group.MaxSize(t.Context()))
 
 	next, err := NewScaleSet(&dynamic.NodeGroupSpec{Name: "pool", MinSize: 0, MaxSize: 3}, manager, 3, false)
 	require.NoError(t, err)
@@ -105,10 +105,10 @@ func TestRegisterSuspendedConfiguredBounds(t *testing.T) {
 		require.NoError(t, manager.fetchAutoNodeGroups())
 		require.Same(t, group, manager.getNodeGroups()[0])
 
-		op, pending := group.powerOperation("vm-1")
+		op, pending := group.powerOperation("vm-0")
 		require.True(t, pending)
-		require.True(t, op.park)
-		require.Equal(t, 6, group.MaxSize(t.Context()))
+		require.False(t, op.park)
+		require.Equal(t, 4, group.MaxSize(t.Context()))
 	}
 }
 

@@ -69,8 +69,12 @@ func TestNewVMSSPowerClientCloudAndRequests(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			for _, action := range []string{"deallocate"} {
-				_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+			for _, action := range []string{"start", "deallocate"} {
+				if action == "start" {
+					_, err = client.BeginStart(t.Context(), "rg", "pool", "0", nil)
+				} else {
+					_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+				}
 
 				require.NoError(t, err)
 				require.Equal(t, http.MethodPost, transport.request.Method)
@@ -125,8 +129,12 @@ func TestNewVMSSPowerClientHostedRequests(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	for _, action := range []string{"deallocate"} {
-		_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+	for _, action := range []string{"start", "deallocate"} {
+		if action == "start" {
+			_, err = client.BeginStart(t.Context(), "rg", "pool", "0", nil)
+		} else {
+			_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+		}
 
 		require.NoError(t, err)
 		require.Equal(t, http.MethodPost, transport.request.Method)

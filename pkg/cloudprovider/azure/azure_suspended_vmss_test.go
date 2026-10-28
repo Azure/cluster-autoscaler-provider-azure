@@ -48,7 +48,9 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetvmclient/mock_virtualmachinescalesetvmclient"
 	providerconfig "sigs.k8s.io/cloud-provider-azure/pkg/provider/config"
 	"sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider"
+	"sigs.k8s.io/cluster-autoscaler/pkg/config"
 	"sigs.k8s.io/cluster-autoscaler/pkg/config/dynamic"
+	"sigs.k8s.io/cluster-autoscaler/pkg/observers/nodegroupchange"
 	catest "sigs.k8s.io/cluster-autoscaler/pkg/utils/test"
 )
 
@@ -70,6 +72,7 @@ type suspendedWorld struct {
 	nilPark        bool
 	nilStart       bool
 	startResult    func(int) error
+	startDelay     time.Duration
 	parkResult     func(int) error
 	inventoryErr   error
 	inventoryReads int
@@ -326,7 +329,7 @@ func (ws suspendedWorlds) world(name string) (*suspendedWorld, error) {
 }
 
 func (ws suspendedWorlds) BeginStart(
-	_ context.Context, _, name, id string,
+	ctx context.Context, _, name, id string,
 	_ *armcompute.VirtualMachineScaleSetVMsClientBeginStartOptions,
 ) (*azruntime.Poller[armcompute.VirtualMachineScaleSetVMsClientStartResponse], error) {
 	w, err := ws.world(name)
@@ -342,6 +345,13 @@ func (ws suspendedWorlds) BeginStart(
 	w.events = append(w.events, "start:"+id)
 	err, nilPoller := w.startError[i], w.nilStart
 	w.mu.Unlock()
+	if w.startDelay > 0 {
+		select {
+		case <-time.After(w.startDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if err != nil || nilPoller {
 		return nil, err
 	}
@@ -498,6 +508,8 @@ func newSuspendedManager(t *testing.T, client *fake.Clientset, worlds ...*suspen
 		},
 		env: azure.PublicCloud, kubeClient: client, cordonNodeBeforeTerminate: true,
 		explicitlyConfigured: explicit,
+		nodeGroupDefaults:    config.NodeGroupAutoscalingOptions{MaxNodeProvisionTime: 15 * time.Minute},
+		scaleStateNotifier:   nodegroupchange.NewNodeGroupChangeObserversList(),
 		azClient: &azClient{
 			virtualMachineScaleSetsClient: vmssClient, virtualMachineScaleSetVMsClient: instanceClient,
 			virtualMachinesClient: vmClient, vmssClientForDelete: resizeClient, vmssPowerClient: suspendedWorlds(worlds),
@@ -780,6 +792,51 @@ func TestSuspendedInventoryPowerStates(t *testing.T) {
 	}
 }
 
+func TestSuspendedGetOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		tags                       map[string]string
+		missingVMSS, deleteMode    bool
+		wantStartup, wantProvision time.Duration
+	}{
+		{name: "defaults",
+			wantStartup: time.Hour, wantProvision: 15 * time.Minute},
+		{name: "pool overrides",
+			tags:        map[string]string{config.DefaultMaxNodeStartupTimeKey: "1m", config.DefaultMaxNodeProvisionTimeKey: "30m"},
+			wantStartup: time.Minute, wantProvision: 30 * time.Minute},
+		{name: "invalid pool options",
+			tags:        map[string]string{config.DefaultMaxNodeStartupTimeKey: "invalid", config.DefaultMaxNodeProvisionTimeKey: "invalid"},
+			wantStartup: time.Hour, wantProvision: 15 * time.Minute},
+		{name: "missing VMSS", missingVMSS: true, wantStartup: time.Hour, wantProvision: 15 * time.Minute},
+		{name: "Delete unchanged", deleteMode: true,
+			tags:        map[string]string{config.DefaultMaxNodeStartupTimeKey: "2h", config.DefaultMaxNodeProvisionTimeKey: "2h"},
+			wantStartup: time.Hour, wantProvision: 15 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, group := newSuspendedProvider(t, &suspendedWorld{states: []string{vmPowerStateRunning}},
+				fake.NewClientset(), 0, 3)
+			group.deallocate = !tc.deleteMode
+			group.manager.azureCache.autoscalingOptions[azureRef{Name: group.Name}] = tc.tags
+
+			if tc.missingVMSS {
+				delete(group.manager.azureCache.scaleSets, group.Name)
+			}
+
+			defaults := config.NodeGroupAutoscalingOptions{
+				MaxNodeStartupTime: time.Hour, MaxNodeProvisionTime: 15 * time.Minute,
+				ScaleDownUnneededTime: time.Hour, ScaleDownUnreadyTime: time.Minute,
+				ScaleDownUtilizationThreshold: 0.3, IgnoreDaemonSetsUtilization: true,
+			}
+			options, err := group.GetOptions(t.Context(), defaults)
+			require.NoError(t, err)
+
+			expected := defaults
+			expected.MaxNodeStartupTime, expected.MaxNodeProvisionTime = tc.wantStartup, tc.wantProvision
+			require.Equal(t, expected, *options)
+		})
+	}
+}
+
 func TestSuspendedBoundsKeepLastSnapshotOnError(t *testing.T) {
 	node := suspendedTestNode(0, false)
 	world := &suspendedWorld{states: []string{vmPowerStateRunning, vmPowerStateDeallocated}}
@@ -806,7 +863,7 @@ func TestSuspendedBoundsKeepLastSnapshotOnError(t *testing.T) {
 func TestSuspendedInventoryDoesNotReuseVMIDOverride(t *testing.T) {
 	world := &suspendedWorld{states: []string{vmPowerStateDeallocated}, identities: map[int]string{}}
 	_, group := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
-	group.recordPower("vm-0", suspendedPowerOperation{park: true, polling: true})
+	group.recordPower("vm-0", suspendedPowerOperation{})
 	instances, err := group.Nodes(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, cloudprovider.InstanceCreating, instances[0].Status.State)
@@ -824,9 +881,10 @@ func TestSuspendedInventoryDoesNotReuseVMIDOverride(t *testing.T) {
 
 func TestSuspendedRediscoveryKeepsPendingOperations(t *testing.T) {
 	node := suspendedTestNode(0, true)
-	world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+	node.Annotations[resumeMarkerAnnotation] = "{}"
+	world := &suspendedWorld{states: []string{vmPowerStateDeallocated}}
 	provider, group := newSuspendedProvider(t, world, fake.NewClientset(node), 0, 3)
-	group.recordPower("vm-0", suspendedPowerOperation{node: node, park: true, polling: true})
+	group.recordPower("vm-0", suspendedPowerOperation{node: node, resumed: time.Now()})
 	next, err := NewScaleSet(&dynamic.NodeGroupSpec{Name: "pool", MinSize: 0, MaxSize: 4},
 		provider.azureManager, 1, false)
 	require.NoError(t, err)
@@ -834,8 +892,8 @@ func TestSuspendedRediscoveryKeepsPendingOperations(t *testing.T) {
 
 	_, pending := next.powerOperation("vm-0")
 	require.True(t, pending)
-	require.ErrorContains(t, next.IncreaseSize(t.Context(), 4), "parking is still in progress")
-	require.Empty(t, world.history())
+	require.NoError(t, next.IncreaseSize(t.Context(), 1))
+	require.Equal(t, []string{"grow:2"}, world.history())
 
 	_, pending = next.powerOperation("vm-0")
 	require.True(t, pending, "new demand preserves the original accepted VMID")
