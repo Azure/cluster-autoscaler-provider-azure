@@ -1635,6 +1635,10 @@ func TestScaleSetEnableVmssFlexNodesFlag(t *testing.T) {
 }
 
 func TestScaleSetTemplateNodeInfo(t *testing.T) {
+	static, dynamic := GetInstanceTypeStatically, GetInstanceTypeDynamically
+	t.Cleanup(func() {
+		GetInstanceTypeStatically, GetInstanceTypeDynamically = static, dynamic
+	})
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 

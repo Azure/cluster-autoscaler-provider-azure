@@ -4,4 +4,4 @@ description: Scales Kubernetes worker nodes within Azure autoscaling groups.
 icon: https://github.com/kubernetes/kubernetes/raw/master/logo/logo.png
 name: cluster-autoscaler
 type: application
-version: 9.59.3
+version: 9.59.4

@@ -201,6 +201,7 @@ func (scaleSet *ScaleSet) Autoprovisioned(ctx context.Context) bool {
 // GetOptions returns NodeGroupAutoscalingOptions that should be used for this particular
 // NodeGroup. Returning a nil will result in using default options.
 func (scaleSet *ScaleSet) GetOptions(ctx context.Context, defaults config.NodeGroupAutoscalingOptions) (*config.NodeGroupAutoscalingOptions, error) {
+	options := &defaults
 	template, err := scaleSet.getVMSSFromCache()
 	if err != nil {
 		klog.Errorf("failed to get information for VMSS: %s", scaleSet.Name)
@@ -208,9 +209,22 @@ func (scaleSet *ScaleSet) GetOptions(ctx context.Context, defaults config.NodeGr
 		// Every invocation of GetOptions() returns an error if this condition is met:
 		// `if err != nil && err != cloudprovider.ErrNotImplemented`
 		// The error return value is intended to only capture unimplemented.
-		return nil, nil
+		if !scaleSet.suspendsParkedNodes() {
+			return nil, nil
+		}
+	} else {
+		options = scaleSet.manager.GetScaleSetOptions(*template.Name, defaults)
+		if scaleSet.suspendsParkedNodes() {
+			tags := scaleSet.manager.azureCache.getAutoscalingOptions(azureRef{Name: *template.Name})
+			if value, ok := getDurationOption(tags, *template.Name, config.DefaultMaxNodeProvisionTimeKey); ok {
+				options.MaxNodeProvisionTime = value
+			}
+			if value, ok := getDurationOption(tags, *template.Name, config.DefaultMaxNodeStartupTimeKey); ok {
+				options.MaxNodeStartupTime = value
+			}
+		}
 	}
-	return scaleSet.manager.GetScaleSetOptions(*template.Name, defaults), nil
+	return options, nil
 }
 
 // MaxSize returns maximum size of the node group.

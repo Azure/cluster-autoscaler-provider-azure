@@ -230,11 +230,13 @@ func BuildAzure(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupD
 func (m *AzureManager) configureAutoscaler(opts *coreoptions.AutoscalerOptions) {
 	m.kubeClient = opts.KubeClient
 	m.cordonNodeBeforeTerminate = opts.CordonNodeBeforeTerminate
+	m.nodeGroupDefaults = opts.NodeGroupDefaults
 
 	// Configure Azure specific NodeInfoComparator
 	if opts.Processors != nil {
 		opts.Processors.NodeGroupSetProcessor = &nodegroupset.BalancingNodeGroupSetProcessor{
 			Comparator: nodegroupset.CreateAzureNodeInfoComparator(opts.AutoscalingOptions.BalancingExtraIgnoredLabels, opts.AutoscalingOptions.NodeGroupSetRatios),
 		}
+		m.registerResumeProcessors(opts.Processors)
 	}
 }
