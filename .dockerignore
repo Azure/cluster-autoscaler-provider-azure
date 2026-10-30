@@ -12,8 +12,6 @@ test/
 # Ignore documentation and other non-build files
 *.md
 LICENSE
-OWNERS
-OWNERS_ALIASES
 CONTRIBUTING.md
 SECURITY_CONTACTS
 CODE_OF_CONDUCT.md
