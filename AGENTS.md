@@ -39,7 +39,7 @@ Run from the repository root.
 
 A root `go test ./...` does not include `test/`, which is a separate module with its own `go.mod` and Makefile.
 
-## Before opening a PR
+## Before making a commit
 
 ```sh
 make format
