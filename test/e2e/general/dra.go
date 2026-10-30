@@ -71,7 +71,7 @@ var _ = Describe("Azure Provider", Label("dra"), func() {
 
 			By("waiting for the NotTriggerScaleUp event and checking that no worker is added")
 			utils.WaitPodEvent(ctx, pods[0], "NotTriggerScaleUp")
-			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1)
+			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1, 5*time.Minute)
 			var claims resourcev1.ResourceClaimList
 			Expect(utils.Env.K8s.List(ctx, &claims, client.InNamespace(utils.Namespace.Name))).To(Succeed())
 			Expect(claims.Items).To(HaveLen(1))

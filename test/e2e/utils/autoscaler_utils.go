@@ -138,6 +138,9 @@ func (e *Environment) Controller(ctx context.Context) error {
 	}
 
 	expected := c.Pools()
+	if c.Preparation == "deallocate" {
+		expected = []string{c.MainPool}
+	}
 
 	return CheckStatus(status.Data["status"], expected, time.Now(), pods[0].CreationTimestamp.Time)
 }

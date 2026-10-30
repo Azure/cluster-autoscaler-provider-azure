@@ -36,6 +36,7 @@ var ErrBounds = errors.New("pool maximum exceeded")
 type Instance struct {
 	ID                string
 	VMID              string
+	PowerState        string
 	ProvisioningState string
 	NICs              []string
 }

@@ -61,6 +61,8 @@ func SetupSpec(ctx SpecContext) {
 		TestSuiteLabelTaint,
 		TestSuiteLabelMinimum,
 		TestSuiteLabelBalance,
+		TestSuiteLabelNoJoin,
+		TestSuiteLabelDeallocate,
 	} {
 		matches, err := report.MatchesLabelFilter(preparation)
 		Expect(err).NotTo(HaveOccurred())
@@ -119,7 +121,7 @@ func SetupSpec(ctx SpecContext) {
 			4*time.Minute,
 			PollInterval,
 		).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
-		if Env.Config.Preparation != TestSuiteLabelMinimum {
+		if p := Env.Config.Preparation; p != TestSuiteLabelMinimum && p != TestSuiteLabelDeallocate {
 			WaitStable(ctx, 1, 0)
 		}
 	}, NodeTimeout(20*time.Minute))
@@ -389,9 +391,8 @@ func WaitPodEvent(ctx context.Context, pod corev1.Pod, reason string) {
 	).Should(Succeed())
 }
 
-// ObserveNoGrowth requires the baseline pools and the workload state to stay
-// unchanged for five minutes.
-func ObserveNoGrowth(ctx context.Context, name, pool string, ready, pending int) {
+// ObserveNoGrowth requires the baseline and workload to stay unchanged for duration.
+func ObserveNoGrowth(ctx context.Context, name, pool string, ready, pending int, duration time.Duration) {
 	Consistently(
 		ctx,
 		func() error {
@@ -408,7 +409,7 @@ func ObserveNoGrowth(ctx context.Context, name, pool string, ready, pending int)
 
 			return err
 		},
-		5*time.Minute,
+		duration,
 		PollInterval,
 	).Should(Succeed())
 }

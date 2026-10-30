@@ -20,6 +20,8 @@ package lifecycle
 
 import (
 	. "github.com/onsi/ginkgo/v2"
+
+	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/optin"
 )
 
 // Negative priority also keeps these after default specs in one-process runs.
@@ -33,5 +35,7 @@ var _ = Describe(
 		RegisterTaint()
 		RegisterMinimum()
 		RegisterBalance()
+		optin.RegisterNoJoin()
+		optin.RegisterDeallocate()
 	},
 )

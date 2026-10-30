@@ -85,7 +85,7 @@ func (e *Environment) Prepare(ctx context.Context) error {
 		return err
 	}
 
-	return e.InstallController(ctx, e.Config.ExpectedImage)
+	return e.InstallController(ctx, e.Config.ExpectedImage, false)
 }
 
 func (e *Environment) agentPools(ctx context.Context) ([]unstructured.Unstructured, error) {

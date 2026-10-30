@@ -42,6 +42,7 @@ type Config struct {
 	ResourceGroup        string `json:"resourceGroup"`
 	KubeletClientID      string `json:"kubeletClientID"`
 	ExpectedImage        string `json:"expectedImage"`
+	DeallocateImage      string `json:"deallocateImage,omitempty"`
 
 	// These values are discovered or set by this process, never supplied in JSON.
 	RunID        string `json:"-"`
@@ -165,7 +166,7 @@ func (c Config) Validate() error {
 		}
 	}
 
-	for _, image := range []string{c.ExpectedImage} {
+	for _, image := range []string{c.ExpectedImage, c.DeallocateImage} {
 		if image != "" && (strings.ContainsAny(image, "\r\n\"") || !strings.Contains(image, ":")) {
 			return fmt.Errorf("images must use a tagged reference")
 		}

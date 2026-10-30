@@ -42,7 +42,7 @@ var _ = Describe("Azure Provider", func() {
 
 			By("waiting for the NotTriggerScaleUp event and checking that no worker is added")
 			utils.WaitPodEvent(ctx, pods[0], "NotTriggerScaleUp")
-			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1)
+			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1, 5*time.Minute)
 		},
 		NodeTimeout(25*time.Minute),
 	)

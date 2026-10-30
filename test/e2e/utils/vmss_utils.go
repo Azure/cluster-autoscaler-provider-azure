@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	"k8s.io/utils/ptr"
@@ -77,6 +78,18 @@ func (a *AzureTestClient) Read(ctx context.Context) (Snapshot, error) {
 					ID:                normalizeID(*vm.ID),
 					VMID:              ptr.Deref(vm.Properties.VMID, ""),
 					ProvisioningState: ptr.Deref(vm.Properties.ProvisioningState, ""),
+				}
+				if c.Preparation == "deallocate" {
+					view, err := a.vms.GetInstanceView(ctx, c.ResourceGroup, name, ptr.Deref(vm.InstanceID, ""), nil)
+					if err != nil {
+						return result, azureError("read VM power state", err)
+					}
+
+					for _, status := range view.Statuses {
+						if status != nil && strings.HasPrefix(ptr.Deref(status.Code, ""), "PowerState/") {
+							instance.PowerState = strings.TrimPrefix(*status.Code, "PowerState/")
+						}
+					}
 				}
 
 				for _, nic := range vm.Properties.NetworkProfile.NetworkInterfaces {

@@ -50,7 +50,7 @@ var _ = Describe("Azure Provider", Label("priority"), func() {
 			utils.WaitWorkload(ctx, workload.Name, utils.Env.Config.MainPool, 1, 1)
 
 			By("checking that main does not grow for the pending expendable Pod")
-			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 1, 1)
+			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 1, 1, 5*time.Minute)
 		},
 		NodeTimeout(30*time.Minute),
 	)
@@ -96,7 +96,7 @@ var _ = Describe("Azure Provider", Label("priority"), func() {
 
 			By("checking that main does not grow for the replacement expendable Pod")
 			utils.WaitWorkload(ctx, expendable.Name, utils.Env.Config.MainPool, 0, 1)
-			utils.ObserveNoGrowth(ctx, expendable.Name, utils.Env.Config.MainPool, 0, 1)
+			utils.ObserveNoGrowth(ctx, expendable.Name, utils.Env.Config.MainPool, 0, 1, 5*time.Minute)
 			utils.WaitWorkload(ctx, important.Name, utils.Env.Config.MainPool, 1, 0)
 		},
 		NodeTimeout(35*time.Minute),

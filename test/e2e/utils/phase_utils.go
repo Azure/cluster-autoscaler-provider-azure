@@ -71,6 +71,31 @@ func (e *Environment) PreparePhase(ctx context.Context, phase string) error {
 	case TestSuiteLabelBalance:
 		return e.command(ctx, "", "kubectl", "wait", "-n", AutoscalerNamespace, "--for=delete", "pod",
 			"-l", "app.kubernetes.io/instance=cluster-autoscaler", "--timeout=3m")
+	case TestSuiteLabelNoJoin:
+		return e.InstallController(ctx, e.Config.ExpectedImage, false)
+	case TestSuiteLabelDeallocate:
+		if e.Config.DeallocateImage == "" {
+			return fmt.Errorf("deallocate requires deallocateImage")
+		}
+		if err := e.updateNodePool(ctx, "main", func(pool *armcontainerservice.AgentPool) {
+			pool.Properties.ScaleDownMode = ptr.To(armcontainerservice.ScaleDownModeDeallocate)
+		}); err != nil {
+			return err
+		}
+		if err := e.updateTags(
+			ctx,
+			e.Config.MainPool,
+			armresources.TagsPatchOperationMerge,
+			map[string]*string{"max": ptr.To("3")},
+		); err != nil {
+			return err
+		}
+		if err := e.waitForSettlement(ctx); err != nil {
+			return err
+		}
+		e.Config.ExpectedImage = e.Config.DeallocateImage
+		e.setPhase(phase)
+		return e.InstallController(ctx, e.Config.DeallocateImage, true)
 	default:
 		return fmt.Errorf("unknown preparation %q", phase)
 	}

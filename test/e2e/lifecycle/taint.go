@@ -54,7 +54,7 @@ func RegisterTaint() {
 				By("checking that the zero pool does not grow for it")
 				utils.WaitPodEvent(ctx, pods[0], "NotTriggerScaleUp")
 
-				utils.ObserveNoGrowth(ctx, blocked.Name, utils.Env.Config.ZeroPool, 0, 1)
+				utils.ObserveNoGrowth(ctx, blocked.Name, utils.Env.Config.ZeroPool, 0, 1, 5*time.Minute)
 
 				By("creating zero-pool demand with the toleration and waiting for growth")
 				tolerated := utils.Env.Deployment(utils.Namespace.Name, "tolerated-taint", utils.ZeroLabel, "50m", 1)

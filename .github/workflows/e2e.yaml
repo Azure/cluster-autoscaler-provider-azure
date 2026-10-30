@@ -24,6 +24,10 @@ on:
         description: Azure location (defaults to E2E_LOCATION)
         type: string
         default: ""
+      deallocate_image:
+        description: Optional Deallocate image built from PR 13 until it merges (registry/repo:tag), imported into the shared ACR
+        type: string
+        default: ""
       cluster_count:
         description: Parallel workload clusters (1 to 16)
         type: number
@@ -50,6 +54,7 @@ jobs:
 
       AZURE_LOCATION: ${{ inputs.location || vars.E2E_LOCATION }}
       KUBERNETES_VERSION: ${{ inputs.kubernetes_version }}
+      E2E_DEALLOCATE_IMAGE: ${{ inputs.deallocate_image }}
       E2E_CLUSTER_COUNT: ${{ inputs.cluster_count }}
       CLUSTER_NAME: ${{ vars.E2E_RESOURCE_PREFIX || 'e2ea' }}${{ github.run_id }}a${{ github.run_attempt }}
       GOMAXPROCS: "4"

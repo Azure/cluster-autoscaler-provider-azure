@@ -29,6 +29,7 @@ import (
 	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/basic"
 	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/general"
 	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/lifecycle"
+	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/optin"
 	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/utils"
 )
 

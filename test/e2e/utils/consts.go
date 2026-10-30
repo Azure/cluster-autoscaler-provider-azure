@@ -51,4 +51,8 @@ const (
 	TestSuiteLabelMinimum = "minimum"
 	// TestSuiteLabelBalance selects the balancing phase.
 	TestSuiteLabelBalance = "balance"
+	// TestSuiteLabelNoJoin selects the never-registers phase.
+	TestSuiteLabelNoJoin = "no-join"
+	// TestSuiteLabelDeallocate selects the optional deallocate phases.
+	TestSuiteLabelDeallocate = "deallocate"
 )
