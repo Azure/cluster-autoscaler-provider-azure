@@ -52,6 +52,8 @@ Direct runs default to one Ginkgo process and a single JSON object. For parallel
 
 `test/hack/capz.sh` defines `CAPZ_VERSION` once and derives the matching `release-<major>.<minor>` runtime branch, following upstream autoscaler Prow. Runs record the resolved CAPZ commit in `capz-commit.txt` alongside `source-commit.txt`. Template generation fetches the tag into `test/.tools/capz-$CAPZ_VERSION`, copies our relative overlay into `templates/test/autoscaler-e2e/`, and builds with CAPZ's own kustomize target. GitHub access is required; the existing verify workflow runs `make -C test verify-templates`.
 
+Bump `CAPZ_VERSION` in `test/hack/capz.sh` and run `make -C test generate-templates`. To try another tag without changing the default, use `CAPZ_VERSION=vX.Y.Z make -C test verify-templates`. Patch-only changes also need regeneration.
+
 ```sh
 make -C test test-local
 ```
