@@ -117,6 +117,9 @@ type Config struct {
 	// VMSS PUTs so concurrent modifications are rejected with 412 instead of overwritten.
 	// Disabled by default; set to true to opt in.
 	EnableVMSSEtag bool `json:"enableVMSSEtag,omitempty" yaml:"enableVMSSEtag,omitempty"`
+
+	// Deallocate parks VMs and retains their Nodes in supported VMSS groups.
+	Deallocate bool `json:"deallocate,omitempty" yaml:"deallocate,omitempty"`
 }
 
 // These are only here for backward compabitility. Their equivalent exists in providerazure.Config with a different name.
@@ -290,6 +293,9 @@ func BuildAzureConfig(configReader io.Reader) (*Config, error) {
 		return nil, err
 	}
 	if _, err = assignBoolFromEnvIfExists(&cfg.EnableVMSSEtag, "AZURE_ENABLE_VMSS_ETAG"); err != nil {
+		return nil, err
+	}
+	if _, err = assignBoolFromEnvIfExists(&cfg.Deallocate, "AZURE_DEALLOCATE"); err != nil {
 		return nil, err
 	}
 	if _, err = assignBoolFromEnvIfExists(&cfg.EnableDynamicInstanceList, "AZURE_ENABLE_DYNAMIC_INSTANCE_LIST"); err != nil {

@@ -18,13 +18,20 @@ package azure
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v7"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v8"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	apiv1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetclient/mock_virtualmachinescalesetclient"
+	"sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider"
 )
 
 func TestParseAzureNodeGroupSpec(t *testing.T) {
@@ -88,6 +95,67 @@ func TestParseAzureNodeGroupSpec(t *testing.T) {
 			require.Equal(t, tc.policy, spec.policy)
 			require.Equal(t, tc.labels, spec.labels)
 			require.Equal(t, tc.taints, spec.taints)
+		})
+	}
+}
+
+func TestHasExplicitDeallocatePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		specs []string
+		want  bool
+	}{
+		{name: "none"},
+		{name: "Delete", specs: []string{"0:5:Delete:pool:{}|"}},
+		{name: "four fields", specs: []string{"0:5:Deallocate:pool"}, want: true},
+		{name: "later spec", specs: []string{"0:5:pool", "0:5:Deallocate:other"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, hasExplicitDeallocatePolicy(tc.specs))
+		})
+	}
+}
+
+func TestSuspendedGroupGates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*AzureManager, *armcompute.VirtualMachineScaleSet)
+	}{
+		{name: "standard", mutate: func(m *AzureManager, _ *armcompute.VirtualMachineScaleSet) {
+			m.config.VMType = "standard"
+		}},
+		{name: "flex", mutate: func(_ *AzureManager, set *armcompute.VirtualMachineScaleSet) {
+			set.Properties.OrchestrationMode = ptr.To(armcompute.OrchestrationModeFlexible)
+		}},
+
+		{name: "Low", mutate: func(_ *AzureManager, set *armcompute.VirtualMachineScaleSet) {
+			set.Properties.VirtualMachineProfile.Priority = ptr.To(armcompute.VirtualMachinePriorityTypesLow)
+		}},
+		{name: "AKS managed", mutate: func(_ *AzureManager, set *armcompute.VirtualMachineScaleSet) {
+			set.Tags["AKS-MANAGED-POOLNAME"] = ptr.To("workers")
+		}},
+
+		{name: "ephemeral", mutate: func(_ *AzureManager, set *armcompute.VirtualMachineScaleSet) {
+			set.Properties.VirtualMachineProfile.StorageProfile.OSDisk.DiffDiskSettings = &armcompute.DiffDiskSettings{}
+		}},
+
+		{name: "unmanaged disk", mutate: func(_ *AzureManager, set *armcompute.VirtualMachineScaleSet) {
+			set.Properties.VirtualMachineProfile.StorageProfile.OSDisk.ManagedDisk = nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+			provider, original := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+			m := provider.azureManager
+			m.UnregisterNodeGroup(original)
+			m.config.Deallocate = false
+			set := world.vmss()
+			tc.mutate(m, set)
+			m.azureCache.setScaleSet("pool", set)
+			_, err := m.buildNodeGroupFromSpec("1:3:Deallocate:pool")
+			var unsupported *unsupportedDeallocateError
+			require.ErrorAs(t, err, &unsupported)
+
 		})
 	}
 }
@@ -167,4 +235,103 @@ func TestExtendedVMPoolNodeTemplate(t *testing.T) {
 	}, otherInfo.Node().Spec.Taints)
 	require.Equal(t, "from-pool", *manager.azureCache.getVMsPoolMap()[vmsAgentPoolName].Properties.NodeLabels["env"])
 	require.NotContains(t, manager.azureCache.getVMsPoolMap()[vmsAgentPoolName].Properties.NodeLabels, "other")
+}
+
+func TestSuspendedGlobalPolicy(t *testing.T) {
+	world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+	provider, _ := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+	m := provider.azureManager
+	group, err := m.buildNodeGroupFromSpec("0:3:Delete:pool")
+	require.NoError(t, err)
+
+	scaleSet := group.(*ScaleSet)
+	require.True(t, scaleSet.suspendsParkedNodes(), "global policy also applies to explicit Delete")
+
+	set := world.vmss()
+	set.Properties.VirtualMachineProfile.StorageProfile.OSDisk.DiffDiskSettings = &armcompute.DiffDiskSettings{}
+	set.Tags["discover"], set.Tags["min"], set.Tags["max"] = ptr.To("yes"), ptr.To("0"), ptr.To("3")
+	m.azureCache.setScaleSet("pool", set)
+	_, err = m.buildNodeGroupFromSpec("0:3:Delete:pool")
+	require.Error(t, err, "unsupported global groups must not fall back to Delete")
+	specs, err := ParseLabelAutoDiscoverySpecs(cloudprovider.NodeGroupDiscoveryOptions{
+		NodeGroupAutoDiscoverySpecs: []string{"label:discover=yes"},
+	})
+	require.NoError(t, err)
+
+	groups, err := m.getFilteredScaleSets(specs)
+	require.NoError(t, err)
+	require.Empty(t, groups)
+}
+
+func TestSuspendedSelectedGroupAndVMsPoolGate(t *testing.T) {
+	world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+	provider, original := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+	m := provider.azureManager
+	m.UnregisterNodeGroup(original)
+	m.config.Deallocate = false
+
+	m.azureCache.vmsPoolMap["workers"] = armcontainerservice.AgentPool{}
+	_, err := m.buildNodeGroupFromSpec("0:3:Deallocate:workers/Standard_D4_v2")
+	require.ErrorContains(t, err, "VMs pools are not supported")
+}
+
+func TestSuspendedExtendedGroup(t *testing.T) {
+	for _, global := range []bool{false, true} {
+		t.Run(fmt.Sprintf("global=%t", global), func(t *testing.T) {
+			world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+			provider, original := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+			m := provider.azureManager
+			m.UnregisterNodeGroup(original)
+			m.config.Deallocate = global
+
+			require.NoError(t, m.fetchExplicitNodeGroups([]string{
+				`0:5:Deallocate:pool:{"zone":"east:1"}|key=value:NoSchedule`,
+			}))
+			require.Len(t, m.getNodeGroups(), 1)
+
+			group := m.getNodeGroups()[0].(*ScaleSet)
+
+			require.True(t, group.suspendsParkedNodes())
+			require.True(t, group.explicitDeallocate)
+			require.Equal(t, map[string]string{"zone": "east:1"}, group.labels)
+			require.Equal(t, "key=value:NoSchedule", group.taints)
+		})
+	}
+}
+
+func TestSuspendedExplicitLoadsVMSSCache(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		listErr error
+	}{
+		{name: "inventory loaded before gate"},
+		{name: "failed inventory is not unsupported", listErr: errors.New("inventory unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := &suspendedWorld{states: []string{vmPowerStateRunning}}
+			provider, _ := newSuspendedProvider(t, world, fake.NewClientset(), 0, 3)
+			ctrl := gomock.NewController(t)
+			client := mock_virtualmachinescalesetclient.NewMockInterface(ctrl)
+			client.EXPECT().List(gomock.Any(), "rg").DoAndReturn(
+				func(context.Context, string) ([]*armcompute.VirtualMachineScaleSet, error) {
+					return []*armcompute.VirtualMachineScaleSet{world.vmss()}, tc.listErr
+				}).AnyTimes()
+			provider.azureManager.azClient.virtualMachineScaleSetsClient = client
+			cfg := strings.Replace(validAzureCfg, `"resourceGroup": "fakeId"`, `"resourceGroup": "rg"`, 1)
+			manager, err := createAzureManagerInternal(strings.NewReader(cfg),
+				cloudprovider.NodeGroupDiscoveryOptions{NodeGroupSpecs: []string{"0:3:Deallocate:pool"}},
+				provider.azureManager.azClient)
+			if tc.listErr != nil {
+				require.ErrorContains(t, err, "load VMSS cache for deallocate groups")
+				require.ErrorIs(t, err, tc.listErr)
+				return
+			}
+
+			require.NoError(t, err)
+			t.Cleanup(manager.Cleanup)
+
+			require.Len(t, manager.getNodeGroups(), 1)
+			require.True(t, manager.getNodeGroups()[0].(*ScaleSet).suspendsParkedNodes())
+		})
+	}
 }
