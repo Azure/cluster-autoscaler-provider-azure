@@ -25,7 +25,7 @@ main.go
 | [charts](../charts/README.md) and [deploy](../deploy) | Packaging and deployment examples |
 | [test](../test) | Separate E2E module |
 
-The root module pins the shared core to `sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.0` and Kubernetes libraries to 1.37.0. Library versions do not establish cluster support. The CapacityBuffer, CapacityQuota and ProvisioningRequest APIs still come from `k8s.io/autoscaler/cluster-autoscaler/apis`, at the version the core requires. The E2E module has its own dependency pins.
+The root module pins the shared core to `sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.1` and Kubernetes libraries to 1.37.1. Library versions do not establish cluster support. The CapacityBuffer, CapacityQuota and ProvisioningRequest APIs still come from `k8s.io/autoscaler/cluster-autoscaler/apis`, at the version the core requires. The E2E module has its own dependency pins.
 
 ## Tests
 
