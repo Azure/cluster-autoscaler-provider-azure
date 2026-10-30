@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	"k8s.io/utils/ptr"
 )
 
@@ -86,4 +87,65 @@ func (a *AzureTestClient) Read(ctx context.Context) (Snapshot, error) {
 	}
 
 	return result, nil
+}
+
+func (a *AzureTestClient) listSets(ctx context.Context) ([]*armcompute.VirtualMachineScaleSet, error) {
+	sets := []*armcompute.VirtualMachineScaleSet{}
+	pager := a.sets.NewListPager(a.config.ResourceGroup, nil)
+
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, azureError("list fixture VMSS", err)
+		}
+
+		sets = append(sets, page.Value...)
+	}
+
+	return sets, nil
+}
+
+func poolsFromTags(sets []*armcompute.VirtualMachineScaleSet) (map[string]string, error) {
+	pools := map[string]string{}
+
+	for _, set := range sets {
+		if set == nil || set.Name == nil {
+			return nil, fmt.Errorf("fixture VMSS has no name")
+		}
+
+		pool := ptr.Deref(set.Tags["aks-managed-poolName"], "")
+		if pool == "" || pools[pool] != "" {
+			return nil, fmt.Errorf("missing or duplicate AKS pool tag %q", pool)
+		}
+
+		pools[pool] = *set.Name
+	}
+
+	for _, pool := range []string{
+		"pool0",
+		"main",
+		"zero",
+	} {
+		if pools[pool] == "" {
+			return nil, fmt.Errorf("fixture pool %s is missing", pool)
+		}
+	}
+
+	if len(pools) != 3 {
+		return nil, fmt.Errorf("expected three fixture pools, got %d", len(pools))
+	}
+
+	return pools, nil
+}
+
+func (e *Environment) findPools(sets []*armcompute.VirtualMachineScaleSet) error {
+	pools, err := poolsFromTags(sets)
+	if err != nil {
+		return err
+	}
+
+	e.Config.MainPool, e.Config.ZeroPool = pools["main"], pools["zero"]
+	e.azure.config = e.Config
+
+	return nil
 }

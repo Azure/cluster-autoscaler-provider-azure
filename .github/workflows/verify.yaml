@@ -41,3 +41,11 @@ jobs:
         run: hack/verify-all.sh -v
         env:
           GO111MODULE: auto
+
+      - name: Check E2E library and specs
+        working-directory: ${{ env.GOPATH }}/src/k8s.io/autoscaler
+        run: make -C test test-local
+
+      - name: Verify E2E templates
+        working-directory: ${{ env.GOPATH }}/src/k8s.io/autoscaler
+        run: make -C test verify-templates

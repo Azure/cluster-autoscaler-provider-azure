@@ -43,4 +43,5 @@ var _ = BeforeSuite(func(ctx SpecContext) {
 	Expect(err).NotTo(HaveOccurred())
 	utils.Env, err = utils.NewEnvironment(binding)
 	Expect(err).NotTo(HaveOccurred())
+	Expect(utils.Env.Prepare(ctx)).To(Succeed())
 }, NodeTimeout(90*time.Minute))

@@ -1,3 +1,5 @@
 Azure Provider for Kubernetes Cluster Autoscaler
 
 This project includes code from the Kubernetes Cluster Autoscaler (https://github.com/kubernetes/autoscaler, commit 7df904eabeef796b63ca845b7d5e7f6d9a300f44), Copyright The Kubernetes Authors, licensed under the Apache License, Version 2.0. The license text is in the LICENSE file. The original copyright notices are kept in the source files.
+
+The E2E cluster template test/templates/cluster-template-prow-aks-aso-e2e.yaml is generated from Cluster API Provider Azure (https://github.com/kubernetes-sigs/cluster-api-provider-azure, tag v1.27.0, commit 3d9e0c36bebc1432048148f168a9bb7415e756a7), Copyright The Kubernetes Authors, licensed under the Apache License, Version 2.0.

@@ -79,3 +79,13 @@ e2etests: ## Run E2Es with an explicit environment JSON binding
 test-local: ## Check the library and spec registration without Azure
 	go test -mod=readonly -race -tags=e2e ./e2e/... -skip '^TestE2E$$'
 	go test -mod=readonly -tags=e2e ./e2e -run '^TestE2E$$' -count=1 -args -ginkgo.dry-run
+
+##@ Utilities
+
+.PHONY: generate-templates
+generate-templates: ## Regenerate the committed CAPZ AKS overlay
+	bash hack/templates.sh generate
+
+.PHONY: verify-templates
+verify-templates: ## Check the committed CAPZ AKS overlay is current
+	bash hack/templates.sh verify

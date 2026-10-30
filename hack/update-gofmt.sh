@@ -18,4 +18,4 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-find . -name "*.go" | grep -v "\/vendor\/" | xargs gofmt -s -w
+find . -path './test/.tools' -prune -o -name "*.go" -print | grep -v "\/vendor\/" | xargs gofmt -s -w
