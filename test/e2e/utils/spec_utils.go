@@ -121,7 +121,7 @@ func SetupSpec(ctx SpecContext) {
 			4*time.Minute,
 			PollInterval,
 		).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
-		if p := Env.Config.Preparation; p != TestSuiteLabelMinimum && p != TestSuiteLabelDeallocate {
+		if Env.Config.Preparation != TestSuiteLabelMinimum {
 			WaitStable(ctx, 1, 0)
 		}
 	}, NodeTimeout(20*time.Minute))
@@ -148,7 +148,7 @@ func ReadActiveSnapshot(ctx context.Context) (Snapshot, error) {
 	return ReadSnapshot(ctx)
 }
 
-// WaitStable checks main and zero at the given counts and other test pools at zero.
+// WaitStable checks the test pools' counts, excluding settled parked VMs in Deallocate.
 func WaitStable(ctx context.Context, main, zero int) Snapshot {
 	var snapshot Snapshot
 
@@ -159,6 +159,10 @@ func WaitStable(ctx context.Context, main, zero int) Snapshot {
 			snapshot, err = ReadSnapshot(ctx)
 			if err != nil {
 				return err
+			}
+
+			if Env.Config.Preparation == TestSuiteLabelDeallocate {
+				return snapshot.RunningStable(Env.Config, main, zero)
 			}
 
 			return snapshot.Stable(Env.Config, main, zero)

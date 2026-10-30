@@ -92,7 +92,7 @@ func NewEnvironment(cfg Config) (*Environment, error) {
 
 // Controller checks that the autoscaler Deployment has one replica and one
 // Ready Pod that runs the expected image, and that its status is fresh,
-// Running and lists exactly the test pools in Config.Pools.
+// Running and lists Config.Pools, or only main during deallocate.
 func (e *Environment) Controller(ctx context.Context) error {
 	c := e.Config
 	var deployment appsv1.Deployment
@@ -105,7 +105,7 @@ func (e *Environment) Controller(ctx context.Context) error {
 		return fmt.Errorf("autoscaler Deployment must have one replica")
 	}
 
-	pods, err := e.controllerPods(ctx)
+	pods, err := e.ControllerPods(ctx)
 	if err != nil {
 		return err
 	}
@@ -145,7 +145,8 @@ func (e *Environment) Controller(ctx context.Context) error {
 	return CheckStatus(status.Data["status"], expected, time.Now(), pods[0].CreationTimestamp.Time)
 }
 
-func (e *Environment) controllerPods(ctx context.Context) ([]corev1.Pod, error) {
+// ControllerPods lists Pods selected by the controller Deployment.
+func (e *Environment) ControllerPods(ctx context.Context) ([]corev1.Pod, error) {
 	var deployment appsv1.Deployment
 	if err := e.K8s.Get(ctx, client.ObjectKey{Namespace: AutoscalerNamespace, Name: AutoscalerDeployment}, &deployment); err != nil {
 		return nil, fmt.Errorf("get autoscaler Deployment: %w", err)

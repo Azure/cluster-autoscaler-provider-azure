@@ -82,14 +82,6 @@ func (e *Environment) PreparePhase(ctx context.Context, phase string) error {
 		}); err != nil {
 			return err
 		}
-		if err := e.updateTags(
-			ctx,
-			e.Config.MainPool,
-			armresources.TagsPatchOperationMerge,
-			map[string]*string{"max": ptr.To("3")},
-		); err != nil {
-			return err
-		}
 		if err := e.waitForSettlement(ctx); err != nil {
 			return err
 		}
@@ -165,6 +157,15 @@ func (e *Environment) updateTags(ctx context.Context, pool string, operation arm
 	}
 
 	return nil
+}
+
+// SetResumeDeadline sets or removes the main pool's provisioning deadline tag.
+func (e *Environment) SetResumeDeadline(ctx context.Context, deadline string) error {
+	const tag = "k8s.io_cluster-autoscaler_node-template_autoscaling-options_maxnodeprovisiontime"
+	if deadline == "" {
+		return e.updateTags(ctx, e.Config.MainPool, armresources.TagsPatchOperationDelete, map[string]*string{tag: nil})
+	}
+	return e.updateTags(ctx, e.Config.MainPool, armresources.TagsPatchOperationMerge, map[string]*string{tag: ptr.To(deadline)})
 }
 
 func (e *Environment) updateNodePool(ctx context.Context, name string, update func(*armcontainerservice.AgentPool)) error {

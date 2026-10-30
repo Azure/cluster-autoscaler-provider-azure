@@ -21,17 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v8"
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/monitor/armmonitor"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v9"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
-	"k8s.io/utils/ptr"
 )
 
 // Cloud is the read-only Azure view that the tests use.
@@ -49,7 +46,6 @@ type AzureTestClient struct {
 	clusters *armcontainerservice.ManagedClustersClient
 	pools    *armcontainerservice.AgentPoolsClient
 	tags     *armresources.TagsClient
-	logs     *armmonitor.ActivityLogsClient
 }
 
 func newCloud(cfg Config) (*AzureTestClient, error) {
@@ -73,11 +69,6 @@ func newCloud(cfg Config) (*AzureTestClient, error) {
 		return nil, err
 	}
 
-	logs, err := armmonitor.NewActivityLogsClient(cfg.SubscriptionID, credential, nil)
-	if err != nil {
-		return nil, err
-	}
-
 	nics, err := armnetwork.NewInterfacesClient(cfg.SubscriptionID, credential, nil)
 	if err != nil {
 		return nil, err
@@ -91,29 +82,7 @@ func newCloud(cfg Config) (*AzureTestClient, error) {
 		clusters: aks.NewManagedClustersClient(),
 		pools:    aks.NewAgentPoolsClient(),
 		tags:     tags,
-		logs:     logs,
 	}, nil
-}
-
-// ActivityLogs returns all request evidence for this cluster since started.
-func (e *Environment) ActivityLogs(ctx context.Context, started time.Time) ([]*armmonitor.EventData, error) {
-	filter := fmt.Sprintf("eventTimestamp ge '%s' and resourceGroupName eq '%s'",
-		started.UTC().Format(time.RFC3339), e.Config.ResourceGroup)
-	pager := e.azure.logs.NewListPager(filter, &armmonitor.ActivityLogsClientListOptions{
-		Select: ptr.To("eventTimestamp,resourceId,operationName,status,operationId"),
-	})
-	var events []*armmonitor.EventData
-
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return nil, azureError("read Azure request evidence", err)
-		}
-
-		events = append(events, page.Value...)
-	}
-
-	return events, nil
 }
 
 // NICExists reports whether the VMSS VM NIC with id exists.

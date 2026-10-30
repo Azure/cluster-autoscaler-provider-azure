@@ -202,6 +202,52 @@ func TestSnapshotDuplicateRegistration(t *testing.T) {
 	}
 }
 
+func TestSnapshotRunningStable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		change func(*Snapshot)
+		valid  bool
+	}{
+		{name: "parked Node retained", valid: true},
+		{name: "missing taint", change: func(s *Snapshot) { s.Nodes[2].Spec.Taints = nil }},
+		{name: "resume still in flight", change: func(s *Snapshot) { s.Nodes[2].Annotations["cluster-autoscaler.kubernetes.io/azure-resume"] = "{}" }},
+		{name: "physical count mismatch", change: func(s *Snapshot) { p := s.Pools["main"]; p.Capacity++; s.Pools["main"] = p }},
+		{name: "parked Node missing", change: func(s *Snapshot) { s.Nodes = s.Nodes[:2] }},
+		{name: "external Start", change: func(s *Snapshot) {
+			id := normalizeID(s.Nodes[2].Spec.ProviderID)
+			vm := s.Pools["main"].Instances[id]
+			vm.PowerState = "running"
+			s.Pools["main"].Instances[id] = vm
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testConfig()
+			snapshot := testSnapshot(c)
+			node := testNode(c)
+			node.Name = "parked"
+			node.Spec.ProviderID = strings.TrimSuffix(node.Spec.ProviderID, "0") + "1"
+			node.Spec.Taints = []corev1.Taint{{Key: "status-taint.cluster-autoscaler.kubernetes.io/azure-suspended", Effect: corev1.TaintEffectNoSchedule}}
+			node.Status.Conditions = []corev1.NodeCondition{{Type: "Suspended", Status: corev1.ConditionTrue}}
+			node.Annotations = map[string]string{}
+			snapshot.Nodes = append(snapshot.Nodes, node)
+			id := normalizeID(node.Spec.ProviderID)
+			snapshot.Pools[c.MainPool].Instances[id] = Instance{ID: id, PowerState: "deallocated", ProvisioningState: "Succeeded"}
+			pool := snapshot.Pools[c.MainPool]
+			pool.Capacity++
+			snapshot.Pools[c.MainPool] = pool
+			if tc.change != nil {
+				tc.change(&snapshot)
+			}
+			if err := snapshot.RunningStable(c, 1, 0); (err == nil) != tc.valid {
+				t.Fatalf("RunningStable()=%v, valid=%t", err, tc.valid)
+			}
+			if len(snapshot.Pools[c.MainPool].Instances) != 2 {
+				t.Fatal("RunningStable mutated the original snapshot")
+			}
+		})
+	}
+}
 func TestCheckStatusCapturedRuntimePayload(t *testing.T) {
 	t.Parallel()
 	payload, err := os.ReadFile("testdata/autoscaler-status.yaml")

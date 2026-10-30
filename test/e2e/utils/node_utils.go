@@ -19,6 +19,8 @@ package utils
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +33,33 @@ import (
 // ErrBounds marks a pool that has more VMs or requested capacity than its
 // max tag allows.
 var ErrBounds = errors.New("pool maximum exceeded")
+
+const (
+	// SuspendedCondition marks a retained parked Node.
+	SuspendedCondition = corev1.NodeConditionType("Suspended")
+	// SuspendedTaint prevents scheduling while a worker is parked or resuming.
+	SuspendedTaint = "status-taint.cluster-autoscaler.kubernetes.io/azure-suspended"
+	// ResumeAnnotation stores an in-flight resume marker.
+	ResumeAnnotation = "cluster-autoscaler.kubernetes.io/azure-resume"
+)
+
+// NodeID returns the normalized Azure resource ID of node's VM.
+func NodeID(node corev1.Node) string {
+	return normalizeID(node.Spec.ProviderID)
+}
+
+// IsSuspended reports whether node has a true Suspended condition.
+func IsSuspended(node corev1.Node) bool {
+	_, condition := nodeutil.GetNodeCondition(&node.Status, SuspendedCondition)
+	return condition != nil && condition.Status == corev1.ConditionTrue
+}
+
+// HasSuspendedTaint reports whether node has the suspended NoSchedule taint.
+func HasSuspendedTaint(node corev1.Node) bool {
+	return slices.ContainsFunc(node.Spec.Taints, func(taint corev1.Taint) bool {
+		return taint.Key == SuspendedTaint && taint.Effect == corev1.TaintEffectNoSchedule
+	})
+}
 
 // Instance holds one VMSS VM's resource ID, VM ID, provisioning state and NICs.
 type Instance struct {
@@ -120,6 +149,55 @@ func (s Snapshot) Stable(c Config, main, zero int) error {
 	}
 
 	return s.StablePools(c, counts)
+}
+
+// RunningStable excludes retained, settled parked Nodes from the running counts.
+func (s Snapshot) RunningStable(c Config, main, zero int) error {
+	// Copy the inventory before subtracting parked capacity.
+	active := Snapshot{Pools: map[string]PoolState{}}
+	for name, pool := range s.Pools {
+		if pool.Capacity != len(pool.Instances) {
+			return fmt.Errorf("pool %s has unsettled physical capacity", name)
+		}
+		pool.Instances = maps.Clone(pool.Instances)
+		active.Pools[name] = pool
+	}
+	// Retain only running Nodes and reject unsettled parked VMs.
+	for _, node := range s.Nodes {
+		if !IsSuspended(node) {
+			active.Nodes = append(active.Nodes, node)
+			continue
+		}
+
+		id := normalizeID(node.Spec.ProviderID)
+		found := false
+		for name, pool := range active.Pools {
+			vm, ok := pool.Instances[id]
+			if !ok {
+				continue
+			}
+
+			if vm.PowerState != "deallocated" || vm.ProvisioningState != "Succeeded" ||
+				node.Annotations[ResumeAnnotation] != "" {
+				return fmt.Errorf("suspended Node %s is not settled: power=%s provisioning=%s resume=%t",
+					node.Name, vm.PowerState, vm.ProvisioningState, node.Annotations[ResumeAnnotation] != "")
+			}
+
+			if !HasSuspendedTaint(node) {
+				return fmt.Errorf("parked Node %s has no suspended NoSchedule taint", node.Name)
+			}
+			delete(pool.Instances, id)
+			pool.Capacity--
+			active.Pools[name] = pool
+			found = true
+		}
+
+		if !found {
+			return fmt.Errorf("suspended Node %s has no retained VM", node.Name)
+		}
+	}
+
+	return active.Stable(c, main, zero)
 }
 
 // StablePools checks capacity, VM and Ready Node identity for each pool.

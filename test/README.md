@@ -10,7 +10,7 @@ The suite runs on disposable AKS with this repository's autoscaler, not AKS's ma
 | StatefulSet Azure Disk relocation | `e2e/lifecycle/disk.go` | Base |
 | Minimum growth and one balanced two-node plan | `e2e/lifecycle/{minimum,balance}.go` | `minimum`, `balance` |
 | Unregistered VM timeout, backoff and deletion | `e2e/optin/no_join.go` | `no-join` |
-| Suspended Node retention and parked-first growth | `e2e/optin/deallocate.go` | Opt-in `deallocate` |
+| In-place resume, failed-resume re-park/backoff and restart recovery | `e2e/optin/deallocate.go` | Opt-in `deallocate` |
 
 The general cases preserve upstream's test behavior, adapted to the explicit AKS binding and bounded main/zero workers. The synthetic DRA driver offers four fake devices per main worker, not real GPUs. DRA requires the `resource.k8s.io/v1` API. Main uses min 1/max 2, zero min 0/max 1, and the two similar balance pools min 0/max 2. User workers have 110 Pod slots and isolation taints; only test workloads and DaemonSets occupy them. The D2s_v5 fixture uses 1000m demand Pods, with measured checks that one fits and two do not. The cluster-wide active-node cap is four.
 
@@ -62,7 +62,7 @@ Deallocate is off by default until [#13](https://github.com/Azure/cluster-autosc
 
 Azure CLI resolves a source ACR in the selected subscription automatically; the runner's subscription Contributor covers source registry reads and import on the shared ACR. A private source ACR outside that subscription needs a one-time AcrPull grant for the runner; other source registries must allow external pulls. The kubelet needs only its pre-provisioned AcrPull grant on the shared ACR. No source credentials are passed through workflow inputs.
 
-Go switches main to AKS Deallocate mode and max 3, waits for operations to settle, and installs the deallocate image. Every install includes the chart's `update nodes/status` rule and both startup taints. Only the Deallocate pool is expected in discovery. Direct deallocate runs need the one-time roles, `deallocateImage` and `LABEL_FILTER=deallocate`. The test checks request ordering, not Start completion before new VM creation. It preserves PodCIDR if present; Azure CNI Overlay commonly leaves it unset.
+Go switches main to AKS Deallocate mode, waits for operations to settle, and installs the deallocate image. Every install includes the chart's `update nodes/status` rule and both startup taints. Only the Deallocate pool is expected in discovery. Direct deallocate runs need the one-time roles, `deallocateImage` and `LABEL_FILTER=deallocate`. The three specs check retained Node and VM identities, no physical growth when parked capacity covers demand, re-park/backoff after a 10-second per-pool deadline, and recovery after deleting the autoscaler Pod mid-resume. The deadline tag is removed afterwards. PodCIDR is preserved if present; Azure CNI Overlay commonly leaves it unset. Resume-plus-growth when parked capacity cannot cover demand is not tested.
 
 ## Local checks
 

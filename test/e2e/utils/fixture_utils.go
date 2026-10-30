@@ -37,7 +37,7 @@ import (
 
 // ReadControllerLogsSince returns logs from the tested controller container.
 func (e *Environment) ReadControllerLogsSince(ctx context.Context, since time.Time) (string, error) {
-	pods, err := e.controllerPods(ctx)
+	pods, err := e.ControllerPods(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -62,7 +62,7 @@ func (e *Environment) SaveControllerLogs(ctx context.Context) {
 		return
 	}
 
-	pods, err := e.controllerPods(ctx)
+	pods, err := e.ControllerPods(ctx)
 	if err != nil {
 		Logf("Could not list autoscaler Pods for logs: %v", err)
 		return
