@@ -98,15 +98,9 @@ func (e *Environment) Deployment(namespace, name, poolLabel, cpu string, replica
 // exactly ready Pods are Ready on workers of pool, or on any main or zero
 // worker when pool is empty, and exactly pending Pods are unschedulable.
 func (e *Environment) WorkloadState(ctx context.Context, namespace, name, pool string, ready, pending int) ([]corev1.Pod, error) {
-	var pods corev1.PodList
-
-	if err := e.K8s.List(
-		ctx,
-		&pods,
-		client.InNamespace(namespace),
-		client.MatchingLabels{RunLabel: e.Config.RunID, "app": name},
-	); err != nil {
-		return nil, fmt.Errorf("list workload %s Pods: %w", name, err)
+	pods, err := e.workloadPods(ctx, namespace, name)
+	if err != nil {
+		return nil, err
 	}
 
 	var readyCount, pendingCount int
@@ -126,7 +120,7 @@ func (e *Environment) WorkloadState(ctx context.Context, namespace, name, pool s
 		allowed[node.Name] = true
 	}
 
-	for _, pod := range pods.Items {
+	for _, pod := range pods {
 		if PodReady(pod) && allowed[pod.Spec.NodeName] {
 			readyCount++
 		}
@@ -141,17 +135,27 @@ func (e *Environment) WorkloadState(ctx context.Context, namespace, name, pool s
 		}
 	}
 
-	if len(pods.Items) != ready+pending || readyCount != ready || pendingCount != pending {
-		return pods.Items, fmt.Errorf(
+	if len(pods) != ready+pending || readyCount != ready || pendingCount != pending {
+		return pods, fmt.Errorf(
 			"workload %s: Ready=%d Unschedulable=%d total=%d, want %d/%d/%d",
 			name,
 			readyCount,
 			pendingCount,
-			len(pods.Items),
+			len(pods),
 			ready,
 			pending,
 			ready+pending,
 		)
+	}
+
+	return pods, nil
+}
+
+func (e *Environment) workloadPods(ctx context.Context, namespace, name string) ([]corev1.Pod, error) {
+	var pods corev1.PodList
+	if err := e.K8s.List(ctx, &pods, client.InNamespace(namespace),
+		client.MatchingLabels{RunLabel: e.Config.RunID, "app": name}); err != nil {
+		return nil, fmt.Errorf("list workload %s Pods: %w", name, err)
 	}
 
 	return pods.Items, nil

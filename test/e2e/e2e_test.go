@@ -23,10 +23,12 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/basic"
-	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/basic"
+	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/general"
+	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/utils"
 )
 
 var environmentPath = flag.String("environment", "", "JSON binding to disposable clusters (required)")

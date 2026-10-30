@@ -77,6 +77,10 @@ func (e *Environment) Prepare(ctx context.Context) error {
 		return err
 	}
 
+	if err := e.prepareGeneral(ctx); err != nil {
+		return err
+	}
+
 	return e.InstallController(ctx, e.Config.ExpectedImage)
 }
 

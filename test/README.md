@@ -1,12 +1,13 @@
 # Azure E2E
 
-The suite runs on disposable AKS with this repository's autoscaler, not AKS's managed autoscaler. One kind management cluster creates four workload clusters concurrently from the same CAPZ/ASO template. One Ginkgo invocation distributes the 3 specs across four processes. Each process's `BeforeSuite` prepares only its bound cluster.
+The suite runs on disposable AKS with this repository's autoscaler, not AKS's managed autoscaler. One kind management cluster creates four workload clusters concurrently from the same CAPZ/ASO template. One Ginkgo invocation distributes the 24 specs across four processes. Each process's `BeforeSuite` prepares only its bound cluster.
 
 | First-set coverage | Source | Preparation |
 | --- | --- | --- |
+| Upstream general suite's 21 cases: scale-up/down, PDBs, priority, schedulers and DRA | `e2e/general/` | Base |
 | Tagged discovery, five-minute idle, maximum and physical deletion, scale from zero | `e2e/basic/` | Base |
 
-Main uses min 1/max 2 and zero min 0/max 1. User workers have 110 Pod slots and isolation taints; only test workloads and DaemonSets occupy them. D2s_v5 uses 1000m demand Pods, checked so one fits and two do not. The active-node cap is four.
+The general cases preserve upstream's test behavior, adapted to the explicit AKS binding and bounded main/zero workers. The synthetic DRA driver offers four fake devices per main worker, not real GPUs. DRA requires the `resource.k8s.io/v1` API. Main uses min 1/max 2, zero min 0/max 1. User workers have 110 Pod slots and isolation taints; only test workloads and DaemonSets occupy them. The D2s_v5 fixture uses 1000m demand Pods, with measured checks that one fits and two do not. The cluster-wide active-node cap is four.
 
 ## Run
 
@@ -38,7 +39,7 @@ The Ubuntu runner needs Docker/buildx, Git, Make, jq and Azure CLI, at least 16 
 
 Before creating a cluster, read-only ARM calls confirm that both UAMIs and the shared ACR exist. The controller uses the supplied kubelet identity through IMDS; its client ID is checked against ManagedCluster status. No client secret or federation is needed. ASO's `serviceoperator.azure.com/reconcile-policy=skip` annotation freezes Azure reconciliation after preparation. The CAPI pause is removed before cleanup deletes the Cluster.
 
-Shell retains CAPZ creation, image build, bindings, collection and cleanup, including after a crashed test process. Go uses resource-named helpers in `e2e/utils`, following cloud-provider-azure's E2E layout. Preparation checks the fixture, waits for settlement, pins metrics-server, drains add-ons to pool0, freezes CAPI/ASO and installs the controller through the Helm CLI. Azure clients use the binding's scope; node drains use CAPZ's `kubectl`.
+Shell retains CAPZ creation, image build, bindings, collection and cleanup, including after a crashed test process. Go uses resource-named helpers in `e2e/utils`, following cloud-provider-azure's E2E layout. Preparation checks the fixture, waits for settlement, pins metrics-server, drains add-ons to pool0, freezes CAPI/ASO, creates spec fixtures and installs the controller through the Helm CLI. Azure clients use the binding's scope; node drains use CAPZ's `kubectl`.
 
 Each run records exactly `2 * cluster_count` groups and its run-unique image tags. Cleanup deletes and verifies the groups and untags exactly those images, never the shared ACR or other tags. It still cleans up after build or test failure. Cluster one keeps `CLUSTER_NAME`; later clusters append `c2`, `c3`, etc. Reports record each spec's process, run ID and resource group. Raw CAPZ dumps, kubeconfigs and credentials are not uploaded. Runs serialize per subscription with a 470-minute job deadline, including cleanup. Operators must provide external cleanup if a runner dies or a workflow is cancelled.
 

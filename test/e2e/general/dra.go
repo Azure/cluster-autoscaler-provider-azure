@@ -1,0 +1,283 @@
+//go:build e2e
+
+/*
+Copyright The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package general
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/utils"
+)
+
+const draDriver = "gpu.example.com"
+
+var draDeviceSelector = resourcev1.DeviceSelector{CEL: &resourcev1.CELDeviceSelector{Expression: "device.driver == 'gpu.example.com'"}}
+
+var _ = Describe("Azure Provider", Label("dra"), func() {
+	BeforeEach(utils.SetupSpec, NodeTimeout(20*time.Minute))
+	BeforeEach(func(ctx SpecContext) {
+		checkDRAFixture(ctx)
+	})
+
+	It(
+		"scales up for Pods that claim DRA devices",
+		Label("Feature:ClusterSizeAutoscalingScaleUp", utils.TestSuiteLabelSlow),
+		func(ctx SpecContext) {
+			By("creating eight Pods that each claim one device")
+			workload := draDeployment(ctx, "dra-pressure", utils.MainLabel, 8, 1, false)
+			Expect(utils.Env.K8s.Create(ctx, workload)).To(Succeed())
+
+			By("waiting for main to grow and allocate eight devices")
+			utils.WaitStable(ctx, 2, 0)
+			waitDRAWorkload(ctx, workload, 8, 1)
+		},
+		NodeTimeout(40*time.Minute),
+	)
+
+	It(
+		"does not scale up for a DRA claim larger than any node offers",
+		Label("Feature:ClusterSizeAutoscalingScaleUp"),
+		func(ctx SpecContext) {
+			By("creating a Pod that claims five devices")
+			workload := draDeployment(ctx, "dra-oversized", utils.MainLabel, 1, 5, false)
+			Expect(utils.Env.K8s.Create(ctx, workload)).To(Succeed())
+			pods := utils.WaitWorkload(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1)
+
+			By("waiting for the NotTriggerScaleUp event and checking that no worker is added")
+			utils.WaitPodEvent(ctx, pods[0], "NotTriggerScaleUp")
+			utils.ObserveNoGrowth(ctx, workload.Name, utils.Env.Config.MainPool, 0, 1)
+			var claims resourcev1.ResourceClaimList
+			Expect(utils.Env.K8s.List(ctx, &claims, client.InNamespace(utils.Namespace.Name))).To(Succeed())
+			Expect(claims.Items).To(HaveLen(1))
+			Expect(claims.Items[0].Status.Allocation).To(BeNil(), "claim %s must stay unallocated", claims.Items[0].Name)
+		},
+		NodeTimeout(25*time.Minute),
+	)
+
+	It(
+		"deletes a node and moves its DRA claims to the remaining node",
+		Label("Feature:ClusterSizeAutoscalingScaleDown", utils.TestSuiteLabelSlow),
+		func(ctx SpecContext) {
+			By("growing main to two workers with one device claim each")
+			growth := draDeployment(ctx, "dra-growth", utils.MainLabel, 2, 1, true)
+			Expect(utils.Env.K8s.Create(ctx, growth)).To(Succeed())
+			grown := utils.WaitStable(ctx, 2, 0)
+			waitDRAWorkload(ctx, growth, 2, 1)
+
+			By("running two Pods that each claim two devices")
+			protected := draDeployment(ctx, "dra-drain", utils.MainLabel, 2, 2, false)
+			Expect(utils.Env.K8s.Create(ctx, protected)).To(Succeed())
+			pods := waitDRAWorkload(ctx, protected, 2, 2)
+			utils.AssertDistinctNodes(pods, 2)
+
+			By("removing the growth demand and waiting for one worker to be deleted")
+			Expect(utils.Env.K8s.Delete(ctx, growth)).To(Succeed())
+			utils.WaitBaselineDeleted(ctx, grown, 0, nil)
+
+			By("checking that both claims are allocated again on the surviving worker")
+			pods = waitDRAWorkload(ctx, protected, 2, 2)
+			utils.AssertDistinctNodes(pods, 1)
+		},
+		NodeTimeout(55*time.Minute),
+	)
+})
+
+// checkDRAFixture checks the gpu DeviceClass, the Ready driver DaemonSet and
+// four synthetic devices on each main worker.
+func checkDRAFixture(ctx context.Context) {
+	var class resourcev1.DeviceClass
+	Expect(utils.Env.K8s.Get(ctx, client.ObjectKey{Name: "gpu"}, &class)).To(Succeed(), "the resource.k8s.io/v1 DRA API and gpu DeviceClass are required")
+	Expect(class.Spec.Selectors).To(ContainElement(draDeviceSelector))
+	var daemon appsv1.DaemonSet
+	Expect(utils.Env.K8s.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: "dra-example-driver-kubeletplugin"}, &daemon)).To(Succeed())
+	Expect(daemon.Status.ObservedGeneration).To(Equal(daemon.Generation))
+	Expect(daemon.Status.NumberReady).To(Equal(daemon.Status.DesiredNumberScheduled))
+
+	Eventually(
+		ctx,
+		func() error {
+			_, err := draDevices(ctx)
+			return err
+		},
+		3*time.Minute,
+		utils.PollInterval,
+	).Should(Succeed())
+}
+
+// draDevices requires four synthetic devices on each current main worker,
+// and no devices on other Nodes.
+func draDevices(ctx context.Context) (map[string]string, error) {
+	var slices resourcev1.ResourceSliceList
+
+	if err := utils.Env.K8s.List(ctx, &slices); err != nil {
+		return nil, fmt.Errorf("list ResourceSlices: %w", err)
+	}
+
+	devices, err := utils.DRADevices(slices.Items, draDriver)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot, err := utils.ReadSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	counts := map[string]int{}
+
+	for _, node := range utils.PoolNodes(snapshot.Nodes, utils.Env.Config.PoolID(utils.Env.Config.MainPool)) {
+		counts[node.Name] = 0
+	}
+
+	for device, node := range devices {
+		if _, owned := counts[node]; !owned {
+			return nil, fmt.Errorf("DRA slice advertises device %s on Node %s, which is not a current worker", device, node)
+		}
+
+		counts[node]++
+	}
+
+	for node, count := range counts {
+		if count != 4 {
+			return nil, fmt.Errorf("worker %s has %d synthetic devices, want four", node, count)
+		}
+	}
+
+	return devices, nil
+}
+
+// draDeployment creates a ResourceClaimTemplate that requests devices from
+// the gpu DeviceClass and returns a Deployment whose Pods each use a claim
+// from it.
+func draDeployment(ctx context.Context, name, pool string, replicas int32, devices int64, antiAffinity bool) *appsv1.Deployment {
+	labels := map[string]string{utils.RunLabel: utils.Env.Config.RunID}
+	template := &resourcev1.ResourceClaimTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: utils.Namespace.Name,
+			Labels:    labels,
+		},
+		Spec: resourcev1.ResourceClaimTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{Labels: labels},
+			Spec: resourcev1.ResourceClaimSpec{Devices: resourcev1.DeviceClaim{Requests: []resourcev1.DeviceRequest{{
+				Name: "req-1", Exactly: &resourcev1.ExactDeviceRequest{
+					DeviceClassName: "gpu",
+					AllocationMode:  resourcev1.DeviceAllocationModeExactCount,
+					Count:           devices,
+				},
+			}}}},
+		},
+	}
+	Expect(utils.Env.K8s.Create(ctx, template)).To(Succeed())
+	var workload *appsv1.Deployment
+
+	if antiAffinity {
+		workload = utils.AntiAffinityDeployment(name, pool, replicas)
+	} else {
+		workload = utils.Env.Deployment(utils.Namespace.Name, name, pool, "10m", replicas)
+	}
+
+	workload.Spec.Template.Spec.ResourceClaims = []corev1.PodResourceClaim{{Name: "devices", ResourceClaimTemplateName: ptr.To(name)}}
+	workload.Spec.Template.Spec.Containers[0].Resources.Claims = []corev1.ResourceClaim{{Name: "devices"}}
+
+	return workload
+}
+
+// waitDRAWorkload waits until replicas Pods of workload are Ready on main,
+// each with its own generated claim that holds perPod devices on the Pod's
+// worker, and no device is shared.
+func waitDRAWorkload(ctx context.Context, workload *appsv1.Deployment, replicas, perPod int) []corev1.Pod {
+	utils.WaitWorkload(ctx, workload.Name, utils.Env.Config.MainPool, replicas, 0)
+
+	var pods []corev1.Pod
+	Eventually(
+		ctx,
+		func() error {
+			devices, err := draDevices(ctx)
+			if err != nil {
+				return err
+			}
+
+			used := map[string]bool{}
+			pods, err = utils.ListWorkload(ctx, workload.Name)
+			if err != nil {
+				return err
+			}
+
+			if len(pods) != replicas {
+				return fmt.Errorf("DRA workload has %d Pods, want %d", len(pods), replicas)
+			}
+
+			for _, pod := range pods {
+				if !utils.PodReady(pod) || len(pod.Status.ResourceClaimStatuses) != 1 ||
+					pod.Status.ResourceClaimStatuses[0].ResourceClaimName == nil {
+					return fmt.Errorf("DRA Pod %s is not Ready with an actual generated claim, phase %s", pod.Name, pod.Status.Phase)
+				}
+
+				name := *pod.Status.ResourceClaimStatuses[0].ResourceClaimName
+				var claim resourcev1.ResourceClaim
+
+				if err := utils.Env.K8s.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: name}, &claim); err != nil {
+					return fmt.Errorf("get claim %s: %w", name, err)
+				}
+
+				if !metav1.IsControlledBy(&claim, &pod) {
+					return fmt.Errorf("DRA claim %s is not owned by test Pod %s", name, pod.Name)
+				}
+
+				allocated, err := utils.DRAAllocation(claim, draDriver, perPod)
+				if err != nil {
+					return err
+				}
+
+				for _, key := range allocated {
+					if devices[key] != pod.Spec.NodeName || used[key] {
+						return fmt.Errorf(
+							"claim %s allocation of %s is duplicated or is on Node %q instead of %s",
+							name,
+							key,
+							devices[key],
+							pod.Spec.NodeName,
+						)
+					}
+
+					used[key] = true
+				}
+			}
+
+			return nil
+		},
+		5*time.Minute,
+		utils.PollInterval,
+	).Should(Succeed())
+
+	AddReportEntry("dra-allocation", fmt.Sprintf("%d Ready Pods, %d unique allocated synthetic devices, verified against worker ResourceSlices", replicas, replicas*perPod))
+
+	return pods
+}

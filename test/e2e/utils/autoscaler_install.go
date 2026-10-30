@@ -101,6 +101,8 @@ extraArgs:
   skip-nodes-with-local-storage: true
   skip-nodes-with-system-pods: true
   max-graceful-termination-sec: 120
+  expendable-pods-priority-cutoff: -10
+  bypassed-scheduler-names: non-existing-bypassed-scheduler
 updateStrategy:
   type: Recreate
 `))
