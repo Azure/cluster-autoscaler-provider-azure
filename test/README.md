@@ -1,13 +1,16 @@
 # Azure E2E
 
-The suite runs on disposable AKS with this repository's autoscaler, not AKS's managed autoscaler. One kind management cluster creates four workload clusters concurrently from the same CAPZ/ASO template. One Ginkgo invocation distributes the 24 specs across four processes. Each process's `BeforeSuite` prepares only its bound cluster.
+The suite runs on disposable AKS with this repository's autoscaler, not AKS's managed autoscaler. One kind management cluster creates four workload clusters concurrently from the same CAPZ/ASO template. One Ginkgo invocation distributes the 25 default specs across four processes. Each process's `BeforeSuite` prepares only its bound cluster. Taint, minimum, balance then run on process 1 in one ordered serial container.
 
 | First-set coverage | Source | Preparation |
 | --- | --- | --- |
 | Upstream general suite's 21 cases: scale-up/down, PDBs, priority, schedulers and DRA | `e2e/general/` | Base |
 | Tagged discovery, five-minute idle, maximum and physical deletion, scale from zero | `e2e/basic/` | Base |
+| Tainted scale from zero | `e2e/lifecycle/taint.go` | `taint` |
+| StatefulSet Azure Disk relocation | `e2e/lifecycle/disk.go` | Base |
+| Minimum growth and one balanced two-node plan | `e2e/lifecycle/{minimum,balance}.go` | `minimum`, `balance` |
 
-The general cases preserve upstream's test behavior, adapted to the explicit AKS binding and bounded main/zero workers. The synthetic DRA driver offers four fake devices per main worker, not real GPUs. DRA requires the `resource.k8s.io/v1` API. Main uses min 1/max 2, zero min 0/max 1. User workers have 110 Pod slots and isolation taints; only test workloads and DaemonSets occupy them. The D2s_v5 fixture uses 1000m demand Pods, with measured checks that one fits and two do not. The cluster-wide active-node cap is four.
+The general cases preserve upstream's test behavior, adapted to the explicit AKS binding and bounded main/zero workers. The synthetic DRA driver offers four fake devices per main worker, not real GPUs. DRA requires the `resource.k8s.io/v1` API. Main uses min 1/max 2, zero min 0/max 1, and the two similar balance pools min 0/max 2. User workers have 110 Pod slots and isolation taints; only test workloads and DaemonSets occupy them. The D2s_v5 fixture uses 1000m demand Pods, with measured checks that one fits and two do not. The cluster-wide active-node cap is four.
 
 ## Run
 
@@ -39,15 +42,15 @@ The Ubuntu runner needs Docker/buildx, Git, Make, jq and Azure CLI, at least 16 
 
 Before creating a cluster, read-only ARM calls confirm that both UAMIs and the shared ACR exist. The controller uses the supplied kubelet identity through IMDS; its client ID is checked against ManagedCluster status. No client secret or federation is needed. ASO's `serviceoperator.azure.com/reconcile-policy=skip` annotation freezes Azure reconciliation after preparation. The CAPI pause is removed before cleanup deletes the Cluster.
 
-Shell retains CAPZ creation, image build, bindings, collection and cleanup, including after a crashed test process. Go uses resource-named helpers in `e2e/utils`, following cloud-provider-azure's E2E layout. Preparation checks the fixture, waits for settlement, pins metrics-server, drains add-ons to pool0, freezes CAPI/ASO, creates spec fixtures and installs the controller through the Helm CLI. Azure clients use the binding's scope; node drains use CAPZ's `kubectl`.
+Shell retains CAPZ creation, image build, bindings, collection and cleanup, including after a crashed test process. Go uses resource-named helpers in `e2e/utils`, following cloud-provider-azure's E2E layout. Preparation checks the fixture, waits for settlement, pins metrics-server, drains add-ons to pool0, freezes CAPI/ASO, creates spec fixtures and installs the controller through the Helm CLI. Azure phase updates use SDK clients scoped to the binding; node drains use CAPZ's `kubectl`.
 
 Each run records exactly `2 * cluster_count` groups and its run-unique image tags. Cleanup deletes and verifies the groups and untags exactly those images, never the shared ACR or other tags. It still cleans up after build or test failure. Cluster one keeps `CLUSTER_NAME`; later clusters append `c2`, `c3`, etc. Reports record each spec's process, run ID and resource group. Raw CAPZ dumps, kubeconfigs and credentials are not uploaded. Runs serialize per subscription with a 470-minute job deadline, including cleanup. Operators must provide external cleanup if a runner dies or a workflow is cancelled.
 
 For local preparation on a disposable Azure VM, run `az login --identity --client-id <runner-client-id>`. Export `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_LOCATION`, `AZURE_CONTROL_PLANE_IDENTITY_ID`, `AZURE_KUBELET_IDENTITY_ID` and `E2E_ACR_NAME`, plus `KUBERNETES_VERSION`, a unique lowercase alphanumeric `CLUSTER_NAME` starting with `e2ea`, and absolute `E2E_ROOT`. Run `bash test/hack/ci-e2e.sh run`. `E2E_CLUSTER_COUNT` defaults to 4. Keep the same count for `run`, `collect` and `cleanup`. Always run `collect` and `cleanup`, including after failures. Reports are saved under `$E2E_ROOT/artifacts`; direct Ginkgo runs use `ARTIFACTS` (default `_artifacts`).
 
-Run `make -C test e2etests ENVIRONMENT=/absolute/path/to/environment.json LABEL_FILTER='<labels>'` against a freshly created disposable fixture. The JSON contains `kubeconfig`, `managementKubeconfig`, `clusterName`, `resourceGroup` (the node resource group), `subscriptionID`, `kubeletClientID`, `expectedImage`. The cluster name is also its resource group and run ID. Go discovers VMSS names from `aks-managed-poolName` tags. Controller names, Node labels, the pinned workload image and 1000m CPU request are constants. Each report directory must be unique; no default cluster is selected.
+Run `make -C test e2etests ENVIRONMENT=/absolute/path/to/environment.json LABEL_FILTER='<labels>'` against a freshly created disposable fixture. The JSON contains `kubeconfig`, `managementKubeconfig`, `clusterName`, `resourceGroup` (the node resource group), `subscriptionID`, `kubeletClientID`, `expectedImage`. The cluster name is also its resource group and run ID. Go discovers VMSS names from `aks-managed-poolName` tags. Controller names, Node labels, the pinned workload image and 1000m CPU request are constants. The disk class is `<clusterName>-disk`. Each report directory must be unique; no default cluster is selected.
 
-Direct runs default to one Ginkgo process and a single JSON object. For parallel runs, set `E2E_CLUSTER_COUNT=N` and supply an ordered JSON array of N bindings. Process i uses array entry i; workload kubeconfigs, node resource groups and cluster names must be distinct. The management kubeconfig is shared. Label filters select specs.
+Direct runs default to one Ginkgo process and a single JSON object. For parallel runs, set `E2E_CLUSTER_COUNT=N` and supply an ordered JSON array of N bindings. Process i uses array entry i; workload kubeconfigs, node resource groups and cluster names must be distinct. The management kubeconfig is shared. Label filters select specs; the lifecycle container fixes the prepared-phase order. Its negative priority also keeps phases after defaults in one-process runs.
 
 ## Local checks
 

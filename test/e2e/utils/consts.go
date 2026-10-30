@@ -32,6 +32,8 @@ const (
 	MainLabel = "main"
 	// ZeroLabel selects zero-pool workers.
 	ZeroLabel = "zero"
+	// BalanceLabel selects both similar test pools.
+	BalanceLabel = "balance"
 	// DemandCPU fits once, but not twice, on each test worker.
 	DemandCPU = "1000m"
 	// WorkloadImage pins the sleeping workload container.
@@ -43,4 +45,10 @@ const (
 	TestSuiteLabelSmoke = "smoke"
 	// TestSuiteLabelSlow selects long-running specs.
 	TestSuiteLabelSlow = "Slow"
+	// TestSuiteLabelTaint selects the tainted scale-from-zero phase.
+	TestSuiteLabelTaint = "taint"
+	// TestSuiteLabelMinimum selects minimum enforcement.
+	TestSuiteLabelMinimum = "minimum"
+	// TestSuiteLabelBalance selects the balancing phase.
+	TestSuiteLabelBalance = "balance"
 )

@@ -92,7 +92,7 @@ func NewEnvironment(cfg Config) (*Environment, error) {
 
 // Controller checks that the autoscaler Deployment has one replica and one
 // Ready Pod that runs the expected image, and that its status is fresh,
-// Running and lists exactly the main and zero pools.
+// Running and lists exactly the test pools in Config.Pools.
 func (e *Environment) Controller(ctx context.Context) error {
 	c := e.Config
 	var deployment appsv1.Deployment
@@ -105,29 +105,18 @@ func (e *Environment) Controller(ctx context.Context) error {
 		return fmt.Errorf("autoscaler Deployment must have one replica")
 	}
 
-	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	pods, err := e.controllerPods(ctx)
 	if err != nil {
-		return fmt.Errorf("parse autoscaler selector: %w", err)
+		return err
 	}
 
-	var pods corev1.PodList
-
-	if err := e.K8s.List(
-		ctx,
-		&pods,
-		client.InNamespace(AutoscalerNamespace),
-		client.MatchingLabelsSelector{Selector: selector},
-	); err != nil {
-		return fmt.Errorf("list autoscaler Pods: %w", err)
-	}
-
-	if len(pods.Items) != 1 || !PodReady(pods.Items[0]) {
-		return fmt.Errorf("autoscaler must have one Ready Pod, got %d Pods", len(pods.Items))
+	if len(pods) != 1 || !PodReady(pods[0]) {
+		return fmt.Errorf("autoscaler must have one Ready Pod, got %d Pods", len(pods))
 	}
 
 	found := false
 
-	for _, container := range pods.Items[0].Spec.Containers {
+	for _, container := range pods[0].Spec.Containers {
 		if container.Name != AutoscalerContainer {
 			continue
 		}
@@ -150,7 +139,27 @@ func (e *Environment) Controller(ctx context.Context) error {
 
 	expected := c.Pools()
 
-	return CheckStatus(status.Data["status"], expected, time.Now(), pods.Items[0].CreationTimestamp.Time)
+	return CheckStatus(status.Data["status"], expected, time.Now(), pods[0].CreationTimestamp.Time)
+}
+
+func (e *Environment) controllerPods(ctx context.Context) ([]corev1.Pod, error) {
+	var deployment appsv1.Deployment
+	if err := e.K8s.Get(ctx, client.ObjectKey{Namespace: AutoscalerNamespace, Name: AutoscalerDeployment}, &deployment); err != nil {
+		return nil, fmt.Errorf("get autoscaler Deployment: %w", err)
+	}
+
+	selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+	if err != nil {
+		return nil, fmt.Errorf("parse autoscaler selector: %w", err)
+	}
+
+	var pods corev1.PodList
+	if err := e.K8s.List(ctx, &pods, client.InNamespace(AutoscalerNamespace),
+		client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return nil, fmt.Errorf("list autoscaler Pods: %w", err)
+	}
+
+	return pods.Items, nil
 }
 
 // Read returns the Azure pools and the Kubernetes Nodes. It returns an

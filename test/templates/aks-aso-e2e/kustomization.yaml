@@ -20,6 +20,7 @@ resources:
 - ../../flavors/aks-aso
 - ../../flavors/aks-aso/credentials.yaml
 - patches/worker-pools.yaml
+- patches/balance-pools.yaml
 
 patches:
 - path: patches/pool1-delete.yaml

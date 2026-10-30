@@ -32,19 +32,21 @@ import (
 // max tag allows.
 var ErrBounds = errors.New("pool maximum exceeded")
 
-// Instance holds the identifiers of one VMSS VM that prove its deletion.
+// Instance holds one VMSS VM's resource ID, VM ID, provisioning state and NICs.
 type Instance struct {
 	ID                string
+	VMID              string
 	ProvisioningState string
 	NICs              []string
 }
 
-// PoolState holds the requested capacity, max tag, provisioning state and
-// actual VMs of one VMSS.
+// PoolState holds one VMSS's capacity, bounds, template taint, state and VMs.
 type PoolState struct {
 	Capacity          int
 	Max               int
+	Min               int
 	ProvisioningState string
+	TemplateTaint     string
 	Instances         map[string]Instance
 }
 
@@ -77,7 +79,7 @@ func PoolNodes(nodes []corev1.Node, poolID string) []corev1.Node {
 	return result
 }
 
-// WorkerNodes returns the Nodes of the main and zero pools.
+// WorkerNodes returns the Nodes of the test pools in Config.Pools.
 func WorkerNodes(nodes []corev1.Node, c Config) []corev1.Node {
 	var workers []corev1.Node
 
@@ -107,11 +109,14 @@ func (s Snapshot) checkMax() error {
 	return nil
 }
 
-// Stable requires main and zero to have exactly the given counts for their
+// Stable requires the test pools to have the given counts for their
 // capacity, VMs and Ready, schedulable Nodes with the pool label, one Node
 // for each VM, and a Succeeded VMSS.
 func (s Snapshot) Stable(c Config, main, zero int) error {
 	counts := map[string]int{c.MainPool: main, c.ZeroPool: zero}
+	if c.BalancePoolA != "" {
+		counts[c.BalancePoolA], counts[c.BalancePoolB] = 0, 0
+	}
 
 	return s.StablePools(c, counts)
 }
@@ -135,12 +140,21 @@ func (s Snapshot) StablePools(c Config, counts map[string]int) error {
 // Ready checks capacity and Ready Node identity without requiring an idle VMSS.
 func (s Snapshot) Ready(c Config, main, zero int) error {
 	counts := map[string]int{c.MainPool: main, c.ZeroPool: zero}
+	if c.BalancePoolA != "" {
+		counts[c.BalancePoolA] = 0
+		counts[c.BalancePoolB] = 0
+	}
 
 	return s.readyPools(c, counts)
 }
 
 func (s Snapshot) readyPools(c Config, counts map[string]int) error {
-	labels := map[string]string{c.MainPool: MainLabel, c.ZeroPool: ZeroLabel}
+	labels := map[string]string{
+		c.MainPool:     MainLabel,
+		c.ZeroPool:     ZeroLabel,
+		c.BalancePoolA: BalanceLabel,
+		c.BalancePoolB: BalanceLabel,
+	}
 
 	for name, count := range counts {
 		pool, ok := s.Pools[name]

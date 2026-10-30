@@ -44,9 +44,12 @@ type Config struct {
 	ExpectedImage        string `json:"expectedImage"`
 
 	// These values are discovered or set by this process, never supplied in JSON.
-	RunID    string `json:"-"`
-	MainPool string `json:"-"`
-	ZeroPool string `json:"-"`
+	RunID        string `json:"-"`
+	MainPool     string `json:"-"`
+	ZeroPool     string `json:"-"`
+	Preparation  string `json:"-"`
+	BalancePoolA string `json:"-"`
+	BalancePoolB string `json:"-"`
 }
 
 // LoadConfig reads one JSON object from path, rejects unknown fields and
@@ -174,6 +177,9 @@ func (c Config) Validate() error {
 // Pools returns the VMSS names observed by this run.
 func (c Config) Pools() []string {
 	pools := []string{c.MainPool, c.ZeroPool}
+	if c.BalancePoolA != "" {
+		pools = append(pools, c.BalancePoolA, c.BalancePoolB)
+	}
 
 	return pools
 }

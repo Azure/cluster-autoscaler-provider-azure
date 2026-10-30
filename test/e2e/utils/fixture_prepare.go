@@ -21,9 +21,27 @@ import (
 	"os"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func (e *Environment) createDiskClass(ctx context.Context) error {
+	if err := e.K8s.Get(ctx, client.ObjectKey{Name: DiskCSIDriver}, &storagev1.CSIDriver{}); err != nil {
+		return err
+	}
+
+	return e.K8s.Create(ctx, &storagev1.StorageClass{
+		ObjectMeta:        metav1.ObjectMeta{Name: e.Config.RunID + "-disk"},
+		Provisioner:       DiskCSIDriver,
+		VolumeBindingMode: ptr.To(storagev1.VolumeBindingWaitForFirstConsumer),
+		ReclaimPolicy:     ptr.To(corev1.PersistentVolumeReclaimDelete),
+		Parameters:        map[string]string{"skuName": "StandardSSD_LRS"},
+	})
+}
 
 func (e *Environment) prepareGeneral(ctx context.Context) error {
 	driver, err := os.ReadFile(repoFile("test/hack/dra-driver.yaml.in"))

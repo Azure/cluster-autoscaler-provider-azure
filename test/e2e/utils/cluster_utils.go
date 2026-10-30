@@ -77,6 +77,10 @@ func (e *Environment) Prepare(ctx context.Context) error {
 		return err
 	}
 
+	if err := e.createDiskClass(ctx); err != nil {
+		return err
+	}
+
 	if err := e.prepareGeneral(ctx); err != nil {
 		return err
 	}
@@ -176,8 +180,8 @@ func (e *Environment) settled(ctx context.Context) (string, error) {
 		return fmt.Sprintf("AKS is %q", state), nil
 	}
 
-	if n := len(cluster.Properties.AgentPoolProfiles); n != 3 {
-		return fmt.Sprintf("AKS has %d of 3 pools", n), nil
+	if n := len(cluster.Properties.AgentPoolProfiles); n != 5 {
+		return fmt.Sprintf("AKS has %d of 5 pools", n), nil
 	}
 
 	for _, pool := range cluster.Properties.AgentPoolProfiles {
@@ -201,8 +205,8 @@ func (e *Environment) settled(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	if len(sets) != 3 {
-		return fmt.Sprintf("found %d of 3 VMSS", len(sets)), nil
+	if len(sets) != 5 {
+		return fmt.Sprintf("found %d of 5 VMSS", len(sets)), nil
 	}
 
 	for _, set := range sets {

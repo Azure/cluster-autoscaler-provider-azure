@@ -34,7 +34,7 @@ import (
 const InfiniteSleepCommand = "trap exit TERM; while true; do sleep 1; done"
 
 // Deployment returns a run-labeled Deployment of sleeping Pods that request
-// cpu and 16Mi of memory. It selects Nodes with poolLabel, or main and zero
+// cpu and 16Mi of memory. It selects Nodes with poolLabel, or the test
 // workers when poolLabel is empty. It does not tolerate control-plane taints.
 func (e *Environment) Deployment(namespace, name, poolLabel, cpu string, replicas int32) *appsv1.Deployment {
 	labels := map[string]string{RunLabel: e.Config.RunID, "app": name}
@@ -95,7 +95,7 @@ func (e *Environment) Deployment(namespace, name, poolLabel, cpu string, replica
 }
 
 // WorkloadState lists the Pods of workload name. It returns an error unless
-// exactly ready Pods are Ready on workers of pool, or on any main or zero
+// exactly ready Pods are Ready on workers of pool, or on any test
 // worker when pool is empty, and exactly pending Pods are unschedulable.
 func (e *Environment) WorkloadState(ctx context.Context, namespace, name, pool string, ready, pending int) ([]corev1.Pod, error) {
 	pods, err := e.workloadPods(ctx, namespace, name)

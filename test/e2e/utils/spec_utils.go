@@ -55,7 +55,23 @@ var (
 
 // SetupSpec checks the controller and baseline, then creates a test namespace.
 func SetupSpec(ctx SpecContext) {
-	Eventually(ctx, Env.Controller, ControllerTimeout, PollInterval).Should(Succeed())
+	report := CurrentSpecReport()
+
+	for _, preparation := range []string{
+		TestSuiteLabelTaint,
+		TestSuiteLabelMinimum,
+		TestSuiteLabelBalance,
+	} {
+		matches, err := report.MatchesLabelFilter(preparation)
+		Expect(err).NotTo(HaveOccurred())
+		if matches {
+			Expect(Env.Config.Preparation).To(Equal(preparation), "phase fixture preparation mismatch")
+		}
+	}
+
+	if Env.Config.Preparation != TestSuiteLabelMinimum && Env.Config.Preparation != TestSuiteLabelBalance {
+		Eventually(ctx, Env.Controller, ControllerTimeout, PollInterval).Should(Succeed())
+	}
 
 	AddReportEntry("runtime-image", Env.Config.ExpectedImage)
 
@@ -103,7 +119,9 @@ func SetupSpec(ctx SpecContext) {
 			4*time.Minute,
 			PollInterval,
 		).Should(MatchError(apierrors.IsNotFound, "IsNotFound"))
-		WaitStable(ctx, 1, 0)
+		if Env.Config.Preparation != TestSuiteLabelMinimum {
+			WaitStable(ctx, 1, 0)
+		}
 	}, NodeTimeout(20*time.Minute))
 }
 
@@ -128,8 +146,7 @@ func ReadActiveSnapshot(ctx context.Context) (Snapshot, error) {
 	return ReadSnapshot(ctx)
 }
 
-// WaitStable waits until main and zero have the given number of Ready
-// workers and matching Azure capacity.
+// WaitStable checks main and zero at the given counts and other test pools at zero.
 func WaitStable(ctx context.Context, main, zero int) Snapshot {
 	var snapshot Snapshot
 
@@ -192,7 +209,7 @@ func WaitWorkloadIn(ctx context.Context, workloadNamespace, name, pool string, r
 	return pods
 }
 
-// WaitDeleted waits until main and zero are stable at the given counts and
+// WaitDeleted waits until the test pools are stable at the given counts and
 // deleted instances of pool in before are physically gone.
 func WaitDeleted(ctx context.Context, before Snapshot, pool string, deleted, main, zero int) {
 	var after Snapshot
@@ -277,8 +294,7 @@ func GrowThree(ctx context.Context) (*appsv1.Deployment, Snapshot) {
 	return workload, grown
 }
 
-// WaitWorkers waits until main and zero have count workers in total and
-// both pools are stable.
+// WaitWorkers waits until the test pools are stable with count workers in total.
 func WaitWorkers(ctx context.Context, count int) Snapshot {
 	var snapshot Snapshot
 
@@ -597,4 +613,40 @@ func ObserveKept(ctx context.Context, grown Snapshot, namespace, name string, re
 		_, err = Env.WorkloadState(ctx, namespace, name, "", replicas, 0)
 		g.Expect(err).NotTo(HaveOccurred())
 	}, 5*time.Minute, PollInterval).Should(Succeed())
+}
+
+// ControllerReplicas returns the controller's desired replica count.
+func ControllerReplicas(ctx context.Context) int32 {
+	var deployment appsv1.Deployment
+	Expect(Env.K8s.Get(ctx, client.ObjectKey{Namespace: AutoscalerNamespace, Name: AutoscalerDeployment}, &deployment)).To(Succeed())
+
+	return ptr.Deref(deployment.Spec.Replicas, 0)
+}
+
+// StartController starts the controller and waits for its own status.
+func StartController(ctx context.Context) {
+	Expect(Env.scaleController(ctx, 1)).To(Succeed())
+	Eventually(ctx, Env.Controller, ControllerTimeout, PollInterval).Should(Succeed())
+}
+
+// NoPendingDemand rejects unscheduled pending Pods in the bound cluster.
+func NoPendingDemand(ctx context.Context) error {
+	return Env.NoPendingDemand(ctx)
+}
+
+// NoPendingDemand rejects unscheduled pending Pods in this environment.
+func (e *Environment) NoPendingDemand(ctx context.Context) error {
+	var pods corev1.PodList
+
+	if err := e.K8s.List(ctx, &pods); err != nil {
+		return err
+	}
+
+	for _, pod := range pods.Items {
+		if pod.Status.Phase == corev1.PodPending && pod.Spec.NodeName == "" {
+			return fmt.Errorf("unscheduled Pod %s/%s invalidates minimum-size test", pod.Namespace, pod.Name)
+		}
+	}
+
+	return nil
 }

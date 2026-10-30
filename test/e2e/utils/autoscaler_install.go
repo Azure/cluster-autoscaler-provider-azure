@@ -103,6 +103,14 @@ extraArgs:
   max-graceful-termination-sec: 120
   expendable-pods-priority-cutoff: -10
   bypassed-scheduler-names: non-existing-bypassed-scheduler
+  balance-similar-node-groups: true
+  enforce-node-group-min-size: true
+  balancing-ignore-label_1: agentpool
+  balancing-ignore-label_2: kubernetes.azure.com/agentpool
+  balancing-ignore-label_3: aks-managed-poolName
+  balancing-ignore-label_4: aks-managed-creationSource
+  balancing-ignore-label_5: aks-managed-createOperationID
+  balancing-ignore-label_6: aks-managed-consolidated-additional-properties
 updateStrategy:
   type: Recreate
 `))
