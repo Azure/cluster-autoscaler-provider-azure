@@ -217,10 +217,19 @@ func BuildAzure(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupD
 	if err != nil {
 		klog.Fatalf("Failed to create Azure Manager: %v", err)
 	}
+	manager.configureAutoscaler(opts)
 	provider, err := BuildAzureCloudProvider(manager, rl)
 	if err != nil {
 		klog.Fatalf("Failed to create Azure cloud provider: %v", err)
 	}
+
+	return provider
+}
+
+// configureAutoscaler applies the core options and processors the provider uses.
+func (m *AzureManager) configureAutoscaler(opts *coreoptions.AutoscalerOptions) {
+	m.kubeClient = opts.KubeClient
+	m.cordonNodeBeforeTerminate = opts.CordonNodeBeforeTerminate
 
 	// Configure Azure specific NodeInfoComparator
 	if opts.Processors != nil {
@@ -228,6 +237,4 @@ func BuildAzure(opts *coreoptions.AutoscalerOptions, do cloudprovider.NodeGroupD
 			Comparator: nodegroupset.CreateAzureNodeInfoComparator(opts.AutoscalingOptions.BalancingExtraIgnoredLabels, opts.AutoscalingOptions.NodeGroupSetRatios),
 		}
 	}
-
-	return provider
 }

@@ -12,7 +12,7 @@ main.go
 
 [`mustBuildAutoscaler`](../main.go) passes the clients, informers and manager to the core's builder. The scheduling simulation and autoscaling loop come from `sigs.k8s.io/cluster-autoscaler`, not a local copy.
 
-[`pkg/cloudprovider/router`](../pkg/cloudprovider/router/router.go) registers only Azure. [`azure_cloud_provider.go`](../pkg/cloudprovider/azure/azure_cloud_provider.go) builds the provider, which discovers groups, creates node templates and requests scale changes. Scale-down deletes instances. The provider accepts AKS input formats, but deallocate mode is not included.
+[`pkg/cloudprovider/router`](../pkg/cloudprovider/router/router.go) registers only Azure. [`azure_cloud_provider.go`](../pkg/cloudprovider/azure/azure_cloud_provider.go) builds the provider, which discovers groups, creates node templates and requests scale changes. Scale-down deletes instances by default. The opt-in [deallocate mode](suspended-nodes.md) parks registered VMs and retains their Nodes. The provider accepts AKS input formats.
 
 ## AKS inputs
 
@@ -20,7 +20,7 @@ Set `--config-path=/opt/conf/autoscaler/settings.json` to read AKS node groups f
 
 An empty `--config-path` keeps static configuration, unlike the AKS fork, which always reads its fixed path. The flags `--enable-force-delete`, `--enable-dynamic-instance-list` and `--enable-detailed-cse-message` are accepted but have no effect. Use the existing Azure configuration fields for those features.
 
-The provider accepts `--nodes=min:max:name`, `--nodes=min:max:policy:name` and `--nodes=min:max:policy:name:labels JSON|taints`, with `Delete` or `Deallocate` as the policy. Nonempty VMSS labels and taints replace their tag values in node templates. VMs pool labels override matching agent-pool labels, and their taints are appended to agent-pool taints.
+The provider accepts `--nodes=min:max:name`, `--nodes=min:max:policy:name` and `--nodes=min:max:policy:name:labels JSON|taints`. Nonempty VMSS labels and taints replace their tag values in node templates. VMs pool labels override matching agent-pool labels, and their taints are appended to agent-pool taints. Groups requesting `Deallocate` use deallocate mode when supported. Unsupported groups are logged and excluded, including from auto-discovery. They never fall back to deletion. See [deallocate mode](suspended-nodes.md) for the pool restrictions and parking lifecycle.
 
 ## Packages and modules
 

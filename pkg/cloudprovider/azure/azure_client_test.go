@@ -18,8 +18,10 @@ package azure
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,7 @@ import (
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/virtualmachinescalesetvmclient"
 )
 
 // Note: The previous tests for GetServicePrincipalToken were removed
@@ -46,6 +49,93 @@ type staticTokenCredential struct{}
 
 func (staticTokenCredential) GetToken(context.Context, azcorepolicy.TokenRequestOptions) (azcore.AccessToken, error) {
 	return azcore.AccessToken{Token: "token", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+func TestNewVMSSPowerClientCloudAndRequests(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("AzureStack disabled=%t", disabled), func(t *testing.T) {
+			transport := &recordingTransport{}
+			client, err := newVMSSPowerClient(
+				"subscription",
+				staticTokenCredential{},
+				&azclient.ARMClientConfig{Cloud: "AzureStackCloud", DisableAzureStackCloud: disabled},
+				cloud.Configuration{
+					ActiveDirectoryAuthorityHost: "https://login.microsoftonline.com/",
+					Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
+						cloud.ResourceManager: {Endpoint: "https://management.test/", Audience: "https://management.test/"},
+					},
+				},
+				func(options *armpolicy.ClientOptions) { options.Transport = transport },
+			)
+			require.NoError(t, err)
+
+			for _, action := range []string{"deallocate"} {
+				_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+
+				require.NoError(t, err)
+				require.Equal(t, http.MethodPost, transport.request.Method)
+				require.Equal(t, "management.test", transport.request.URL.Host)
+				require.True(t, strings.HasSuffix(transport.request.URL.Path, "/virtualMachines/0/"+action))
+				require.Nil(t, transport.request.Body)
+
+				version := transport.request.URL.Query().Get("api-version")
+				if disabled {
+					require.NotEqual(t, virtualmachinescalesetvmclient.AzureStackCloudAPIVersion, version)
+				} else {
+					require.Equal(t, virtualmachinescalesetvmclient.AzureStackCloudAPIVersion, version)
+				}
+			}
+		})
+	}
+}
+
+func TestNewVMSSPowerClientHostedRequests(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metadata/endpoints" {
+			t.Errorf("unexpected metadata request: %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	t.Cleanup(proxy.Close)
+	cfg := &Config{
+		HostedSubscriptionID:   "hosted-subscription",
+		HostedResourceProxyURL: proxy.URL,
+	}
+	armConfig := newARMClientConfig(cfg, &autorestazure.Environment{
+		ResourceManagerEndpoint: "https://management.azure.com/",
+	})
+
+	transport := &recordingTransport{}
+	client, err := newVMSSPowerClient(
+		cfg.HostedSubscriptionID,
+		staticTokenCredential{},
+		armConfig,
+		cloud.Configuration{
+			Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
+				cloud.ResourceManager: {
+					Endpoint: armConfig.ResourceManagerEndpoint,
+					Audience: "https://management.azure.com/",
+				},
+			},
+		},
+		func(options *armpolicy.ClientOptions) {
+			options.Transport = transport
+			options.InsecureAllowCredentialWithHTTP = true
+		},
+	)
+	require.NoError(t, err)
+
+	for _, action := range []string{"deallocate"} {
+		_, err = client.BeginDeallocate(t.Context(), "rg", "pool", "0", nil)
+
+		require.NoError(t, err)
+		require.Equal(t, http.MethodPost, transport.request.Method)
+		require.Equal(t, proxy.Listener.Addr().String(), transport.request.URL.Host)
+		require.Equal(t,
+			"/subscriptions/hosted-subscription/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/pool/virtualMachines/0/"+action,
+			transport.request.URL.Path,
+		)
+	}
 }
 
 type recordingTransport struct {

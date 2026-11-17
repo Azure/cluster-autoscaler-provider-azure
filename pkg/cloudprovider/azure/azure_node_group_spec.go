@@ -67,3 +67,13 @@ func parseAzureNodeGroupSpec(value string, scaleToZeroSupported bool) (azureNode
 	}
 	return result, nil
 }
+
+func hasExplicitDeallocatePolicy(specs []string) bool {
+	for _, spec := range specs {
+		parsed, _ := parseAzureNodeGroupSpec(spec, true)
+		if parsed.policy == scaleDownPolicyDeallocate {
+			return true
+		}
+	}
+	return false
+}
