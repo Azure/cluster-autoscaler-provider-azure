@@ -1,3 +1,4 @@
 Azure Provider for Kubernetes Cluster Autoscaler
+Copyright (c) Microsoft Corporation.
 
 This project includes code from the Kubernetes Cluster Autoscaler (https://github.com/kubernetes/autoscaler, commit 7df904eabeef796b63ca845b7d5e7f6d9a300f44), Copyright The Kubernetes Authors, licensed under the Apache License, Version 2.0. The license text is in the LICENSE file. The original copyright notices are kept in the source files.
