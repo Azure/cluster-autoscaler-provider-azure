@@ -8,15 +8,13 @@ updates:
   open-pull-requests-limit: 3
   labels:
     - "area/dependency"
-    - "release-note-none"
-    - "ok-to-test"
 
 # Go - Cluster Autoscaler
 - directory: "/"
   package-ecosystem: "gomod"
   open-pull-requests-limit: 5
   schedule:
-    interval: "daily"
+    interval: "weekly"
     time: "15:00"
     # Use America/New_York Standard Time (UTC -05:00)
     timezone: "America/New_York"
@@ -24,25 +22,9 @@ updates:
     prefix: "dependabot"
     include: scope
   ignore:
-    # Update providers manually.
-    - dependency-name: "k8s.io/cloud-provider-aws"
-    - dependency-name: "k8s.io/cloud-provider-aws/*"
-    - dependency-name: "github.com/aws/*"
-    - dependency-name: "k8s.io/cloud-provider-gcp"
-    - dependency-name: "k8s.io/cloud-provider-gcp/*"
-    - dependency-name: "cloud.google.com/go/compute"
-    - dependency-name: "cloud.google.com/go/compute/*"
-    - dependency-name: "github.com/digitalocean/*"
-    # Update dependencies exclusively used by providers manually
-    - dependency-name: "github.com/gofrs/uuid"
-    - dependency-name: "github.com/google/go-querystring"
-    - dependency-name: "github.com/jmattheis/goverter"
-    - dependency-name: "github.com/jmespath-community/go-jmespath"
-    - dependency-name: "github.com/vburenin/ifacemaker"
+    # Update these manually.
     - dependency-name: "golang.org/x/oauth2"
     - dependency-name: "golang.org/x/sys"
-    - dependency-name: "google.golang.org/api"
-    - dependency-name: "gopkg.in/gcfg.v1"
     - dependency-name: "sigs.k8s.io/yaml"
     # Maintain k8s version skew compatibility manually.
     - dependency-name: "k8s.io/kubernetes"
@@ -79,6 +61,4 @@ updates:
     - dependency-name: "k8s.io/sample-cli-plugin"
     - dependency-name: "k8s.io/sample-controller"
   labels:
-    - "ok-to-test"
-    - "area/cluster-autoscaler"
     - "area/dependency"
