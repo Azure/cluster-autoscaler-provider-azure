@@ -16,7 +16,7 @@ require (
 	github.com/Azure/go-autorest/autorest v0.11.30
 	github.com/Azure/skewer/v2 v2.0.1
 	github.com/pkg/errors v0.9.1
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/stretchr/testify v1.12.1
 	go.uber.org/mock v0.6.0
 	k8s.io/api v0.37.2
@@ -29,7 +29,7 @@ require (
 	k8s.io/kubelet v0.37.2
 	k8s.io/kubernetes v1.37.1
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
-	sigs.k8s.io/cloud-provider-azure v1.37.4
+	sigs.k8s.io/cloud-provider-azure v1.37.5
 	sigs.k8s.io/cloud-provider-azure/pkg/azclient v0.23.0
 	sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.1
 	sigs.k8s.io/controller-runtime v0.25.2
@@ -148,7 +148,7 @@ require (
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
