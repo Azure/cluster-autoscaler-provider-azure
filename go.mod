@@ -30,7 +30,7 @@ require (
 	k8s.io/kubernetes v1.37.1
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	sigs.k8s.io/cloud-provider-azure v1.37.4
-	sigs.k8s.io/cloud-provider-azure/pkg/azclient v0.23.0
+	sigs.k8s.io/cloud-provider-azure/pkg/azclient v0.26.3
 	sigs.k8s.io/cluster-autoscaler v0.0.0-k8s.v1.37.1
 	sigs.k8s.io/controller-runtime v0.25.2
 )
@@ -44,9 +44,12 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v9 v9.0.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/keyvault/armkeyvault v1.5.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/msi/armmsi v1.3.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v12 v12.1.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v9 v9.0.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/privatedns/armprivatedns v1.3.0 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets v1.5.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armdeployments v1.0.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources/v3 v3.0.1 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets v1.5.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/storage/internal v0.1.0 // indirect
 	github.com/Azure/go-autorest v14.2.0+incompatible // indirect
@@ -109,7 +112,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/onsi/ginkgo/v2 v2.33.1 // indirect
+	github.com/onsi/ginkgo/v2 v2.34.0 // indirect
 	github.com/onsi/gomega v1.44.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
@@ -143,17 +146,17 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.6 // indirect
-	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297 // indirect
-	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
