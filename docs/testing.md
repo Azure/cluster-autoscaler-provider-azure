@@ -43,6 +43,10 @@ ct lint --chart-dirs charts --target-branch main --validate-maintainers=false
 
 The [chart workflow](../.github/workflows/pr.yaml) runs chart-testing lint and kind installation for chart changes. It also checks that the README matches helm-docs output. See the [chart development guide](../charts/README.md#generate-the-readme) for generation. Local Helm lint does not check version increments or install the chart.
 
+## AKS E2E
+
+See [test/README.md](../test/README.md) for the manual AKS suite, local checks, bindings and runner setup.
+
 ## CI
 
-[ca-test.yaml](../.github/workflows/ca-test.yaml) runs `make test-ci`. [verify.yaml](../.github/workflows/verify.yaml) runs formatting, boilerplate, lint and spelling checks.
+[ca-test.yaml](../.github/workflows/ca-test.yaml) runs `make test-ci`. [verify.yaml](../.github/workflows/verify.yaml) runs formatting, boilerplate, lint, spelling, E2E local checks and template verification.

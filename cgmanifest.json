@@ -12,6 +12,17 @@
         }
       },
       "developmentDependency": false
+    },
+    {
+      "component": {
+        "type": "git",
+        "git": {
+          "name": "kubernetes-sigs/cluster-api-provider-azure",
+          "repositoryUrl": "https://github.com/kubernetes-sigs/cluster-api-provider-azure",
+          "commitHash": "3d9e0c36bebc1432048148f168a9bb7415e756a7"
+        }
+      },
+      "developmentDependency": true
     }
   ]
 }

@@ -6,22 +6,16 @@ IMAGE?=$(REGISTRY)/cluster-autoscaler
 TAG?=dev
 GOARCH?=$(shell go env GOARCH)
 
-CLUSTER_AUTOSCALER_NAMESPACE?=default
-CLUSTER_AUTOSCALER_SERVICEACCOUNT_NAME?=cluster-autoscaler
+TEST_TIMEOUT?=6h
+ENVIRONMENT?=
+E2E_CLUSTER_COUNT?=1
 
-# TEST_SUITE selects a specific test suite directory (e.g., TEST_SUITE=scaleup).
-# When unset, all suites under suites/ are run.
-TEST_SUITE?=
-TEST_TIMEOUT?=3h
-
-# Compute ginkgo suite path: ./suites/... (all) or ./suites/<name>/... (single)
-SUITE_PATH=$(if $(TEST_SUITE),./suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/...,./suites/...)
 FOCUS?=
 LABEL_FILTER?=
 ARTIFACTS?=_artifacts
 
 # --------------------------------------------------------------------------
-# CI target (Prow — builds CAS image, discovers cluster info from CAPZ)
+# CI targets (build image and run against a CAPZ AKS cluster)
 # --------------------------------------------------------------------------
 
 .PHONY: build-e2e
@@ -30,29 +24,16 @@ build-e2e:
 	docker push $(IMAGE)-$(GOARCH):$(TAG)
 
 .PHONY: test-e2e
-test-e2e: build-e2e ## CI: build image + run tests (Prow/CAPZ)
-	go run github.com/onsi/ginkgo/v2/ginkgo --tags e2e -v --trace \
-		--timeout $(TEST_TIMEOUT) \
-		--output-dir "$(ARTIFACTS)" --junit-report="junit.e2e_suite.1.xml" \
-		$(SUITE_PATH) -- \
-		-resource-group="$$(KUBECONFIG= kubectl get managedclusters -n default -o jsonpath='{.items[0].status.nodeResourceGroup}')" \
-		-cluster-name="$$(KUBECONFIG= kubectl get cluster -n default -o jsonpath='{.items[0].metadata.name}')" \
-		-client-id="$$(KUBECONFIG= kubectl get userassignedidentities -n default -o jsonpath='{.items[0].status.clientId}')" \
-		-cas-namespace="$(CLUSTER_AUTOSCALER_NAMESPACE)" \
-		-cas-serviceaccount-name="$(CLUSTER_AUTOSCALER_SERVICEACCOUNT_NAME)" \
-		-cas-image-repository="$(IMAGE)-$(GOARCH)" \
-		-cas-image-tag="$(TAG)"
+test-e2e: build-e2e ## Build, push, bind every prepared cluster and run the suite
+	IMAGE="$(IMAGE)-$(GOARCH)" TAG="$(TAG)" ARTIFACTS="$(ARTIFACTS)" \
+		LABEL_FILTER="$(LABEL_FILTER)" \
+		TEST_TIMEOUT="$(TEST_TIMEOUT)" bash hack/ci-e2e.sh test
 
 # --------------------------------------------------------------------------
-# Local developer targets
+# Local development helpers
 # --------------------------------------------------------------------------
-# Prerequisites:
-#   1. az login
-#   2. make setup-cluster   (creates AKS + ACR + identity, one-time)
-#   3. make deploy-local    (builds + deploys CAS via skaffold)
-#   4. make e2etests        (runs the tests)
-#
-# Required env var: AZURE_RESOURCE_GROUP (set automatically by setup-cluster)
+# These helpers do not create the main/zero fixture for the E2E suite.
+# See README.md for CAPZ setup or pass ENVIRONMENT=<JSON binding> to e2etests.
 
 .PHONY: help
 help: ## Display help
@@ -63,7 +44,7 @@ help: ## Display help
 ##@ Cluster Setup (one-time)
 
 .PHONY: setup-cluster
-setup-cluster: ## Create AKS cluster + ACR + workload identity for e2e testing
+setup-cluster: ## Create AKS + ACR + workload identity for development
 	cd $(DEV_DIR) && bash ./aks-dev-deploy.sh
 
 ##@ Build & Deploy
@@ -79,33 +60,32 @@ deploy-local-dev: ## Build + deploy CAS in watch mode (auto-redeploy on changes)
 ##@ E2E Testing
 
 .PHONY: e2etests
-e2etests: ## Run e2e tests (CAS must already be deployed)
-	go run github.com/onsi/ginkgo/v2/ginkgo \
+e2etests: ## Run E2Es with an explicit environment JSON binding
+	@test -n "$(ENVIRONMENT)" || (echo "ENVIRONMENT is required"; exit 1)
+	go run -mod=readonly github.com/onsi/ginkgo/v2/ginkgo \
 		--tags e2e \
-		-v --trace \
+		-v --trace --fail-on-empty \
+		--procs="$(E2E_CLUSTER_COUNT)" \
 		--timeout $(TEST_TIMEOUT) \
 		--output-dir "$(ARTIFACTS)" \
 		--junit-report="junit.e2e_suite.1.xml" \
+		--json-report="report.e2e_suite.1.json" \
 		$(if $(FOCUS),--focus="$(FOCUS)",) \
 		$(if $(LABEL_FILTER),--label-filter="$(LABEL_FILTER)",) \
-		$(SUITE_PATH) -- \
-		-resource-group="$(AZURE_RESOURCE_GROUP)"
+		./e2e -- \
+		-environment="$(ENVIRONMENT)"
+
+.PHONY: test-local
+test-local: ## Check the library and spec registration without Azure
+	go test -mod=readonly -race -tags=e2e ./e2e/... -skip '^TestE2E$$'
+	go test -mod=readonly -tags=e2e ./e2e -run '^TestE2E$$' -count=1 -args -ginkgo.dry-run
 
 ##@ Utilities
 
-.PHONY: list-suites
-list-suites: ## List available test suites
-	@find suites -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null || echo "No suites found."
+.PHONY: generate-templates
+generate-templates: ## Regenerate the committed CAPZ AKS overlay
+	bash hack/templates.sh generate
 
-.PHONY: validate-env
-validate-env: ## Check required environment variables
-	@missing=""; \
-	for var in AZURE_SUBSCRIPTION_ID AZURE_RESOURCE_GROUP; do \
-		eval val=\$$$$var; \
-		if [ -z "$$val" ]; then missing="$$missing $$var"; fi; \
-	done; \
-	if [ -n "$$missing" ]; then \
-		echo "ERROR: Missing required environment variables:$$missing"; \
-		exit 1; \
-	fi; \
-	echo "All required environment variables are set."
+.PHONY: verify-templates
+verify-templates: ## Check the committed CAPZ AKS overlay is current
+	bash hack/templates.sh verify

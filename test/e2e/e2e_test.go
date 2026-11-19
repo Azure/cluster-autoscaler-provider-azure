@@ -1,0 +1,47 @@
+//go:build e2e
+
+/*
+Copyright (c) Microsoft Corporation.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"flag"
+	"testing"
+	"time"
+
+	_ "github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/basic"
+	"github.com/Azure/cluster-autoscaler-provider-azure/test/e2e/utils"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+var environmentPath = flag.String("environment", "", "JSON binding to disposable clusters (required)")
+
+func TestE2E(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Azure E2E suite")
+}
+
+var _ = BeforeSuite(func(ctx SpecContext) {
+	Expect(*environmentPath).NotTo(BeEmpty(), "-environment is required; no default cluster is selected")
+	config, _ := GinkgoConfiguration()
+	binding, err := utils.LoadConfigForProcess(*environmentPath, GinkgoParallelProcess(), config.ParallelTotal)
+	Expect(err).NotTo(HaveOccurred())
+	utils.Env, err = utils.NewEnvironment(binding)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(utils.Env.Prepare(ctx)).To(Succeed())
+}, NodeTimeout(90*time.Minute))

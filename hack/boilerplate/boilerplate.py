@@ -143,6 +143,7 @@ skipped_names = [
     "third_party",
     "_output",
     ".git",
+    ".tools",
     "cluster/env.sh",
     "vendor",
     "testdata",
