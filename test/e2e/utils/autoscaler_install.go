@@ -30,10 +30,11 @@ type controllerValues struct {
 	ClusterName     string
 	ImageRepository string
 	ImageTag        string
+	Deallocate      bool
 }
 
 // InstallController installs the local chart with CAPZ's Helm CLI.
-func (e *Environment) InstallController(ctx context.Context, image string) error {
+func (e *Environment) InstallController(ctx context.Context, image string, deallocate bool) error {
 	colon := strings.LastIndex(image, ":")
 	if colon < 0 {
 		return fmt.Errorf("controller image must include a tag")
@@ -46,12 +47,15 @@ func (e *Environment) InstallController(ctx context.Context, image string) error
 		ClusterName:     e.Config.ClusterName,
 		ImageRepository: image[:colon],
 		ImageTag:        image[colon+1:],
+		Deallocate:      deallocate,
 	}
 	var values strings.Builder
 
 	if err := controllerValuesTemplate.Execute(&values, data); err != nil {
 		return fmt.Errorf("render controller values: %w", err)
 	}
+
+	e.SaveControllerLogs(ctx)
 
 	return e.command(
 		ctx,
@@ -87,6 +91,15 @@ nodeSelector:
 resources:
   requests: {cpu: 100m, memory: 256Mi}
   limits: {cpu: 500m, memory: 512Mi}
+rbac:
+  additionalRules:
+    - apiGroups: [""]
+      resources: ["nodes/status"]
+      verbs: ["update"]
+extraEnv:
+  CLUSTER_NAME: {{ .ClusterName }}
+  ARM_CLUSTER_RESOURCE_GROUP: {{ .ClusterName }}
+  AZURE_DEALLOCATE: "{{ .Deallocate }}"
 extraArgs:
   v: 4
   write-status-configmap: true
@@ -101,6 +114,18 @@ extraArgs:
   skip-nodes-with-local-storage: true
   skip-nodes-with-system-pods: true
   max-graceful-termination-sec: 120
+  expendable-pods-priority-cutoff: -10
+  bypassed-scheduler-names: non-existing-bypassed-scheduler
+  balance-similar-node-groups: true
+  enforce-node-group-min-size: true
+  balancing-ignore-label_1: agentpool
+  balancing-ignore-label_2: kubernetes.azure.com/agentpool
+  balancing-ignore-label_3: aks-managed-poolName
+  balancing-ignore-label_4: aks-managed-creationSource
+  balancing-ignore-label_5: aks-managed-createOperationID
+  balancing-ignore-label_6: aks-managed-consolidated-additional-properties
+  startup-taint_1: node.cloudprovider.kubernetes.io/shutdown
+  startup-taint_2: node.kubernetes.io/out-of-service
 updateStrategy:
   type: Recreate
 `))

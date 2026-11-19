@@ -28,6 +28,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v8"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v9"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 )
 
 // Cloud is the read-only Azure view that the tests use.
@@ -43,6 +44,8 @@ type AzureTestClient struct {
 	vms      *armcompute.VirtualMachineScaleSetVMsClient
 	nics     *armnetwork.InterfacesClient
 	clusters *armcontainerservice.ManagedClustersClient
+	pools    *armcontainerservice.AgentPoolsClient
+	tags     *armresources.TagsClient
 }
 
 func newCloud(cfg Config) (*AzureTestClient, error) {
@@ -61,6 +64,11 @@ func newCloud(cfg Config) (*AzureTestClient, error) {
 		return nil, err
 	}
 
+	tags, err := armresources.NewTagsClient(cfg.SubscriptionID, credential, nil)
+	if err != nil {
+		return nil, err
+	}
+
 	nics, err := armnetwork.NewInterfacesClient(cfg.SubscriptionID, credential, nil)
 	if err != nil {
 		return nil, err
@@ -72,6 +80,8 @@ func newCloud(cfg Config) (*AzureTestClient, error) {
 		vms:      factory.NewVirtualMachineScaleSetVMsClient(),
 		nics:     nics,
 		clusters: aks.NewManagedClustersClient(),
+		pools:    aks.NewAgentPoolsClient(),
+		tags:     tags,
 	}, nil
 }
 

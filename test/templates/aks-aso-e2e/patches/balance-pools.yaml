@@ -1,0 +1,121 @@
+# Copyright (c) Microsoft Corporation.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachinePool
+metadata:
+  annotations:
+    cluster.x-k8s.io/replicas-managed-by: cluster-autoscaler
+  name: ${CLUSTER_NAME}-balone
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: 0
+  template:
+    metadata: {}
+    spec:
+      bootstrap:
+        dataSecretName: ""
+      clusterName: ${CLUSTER_NAME}
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: AzureASOManagedMachinePool
+        name: ${CLUSTER_NAME}-balone
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: AzureASOManagedMachinePool
+metadata:
+  name: ${CLUSTER_NAME}-balone
+spec:
+  resources:
+  - apiVersion: containerservice.azure.com/v1api20240901
+    kind: ManagedClustersAgentPool
+    metadata:
+      annotations:
+        serviceoperator.azure.com/credential-from: ${ASO_CREDENTIAL_SECRET_NAME}
+      name: ${CLUSTER_NAME}-balone
+    spec:
+      azureName: balone
+      maxPods: 110
+      mode: User
+      nodeLabels:
+        acceptance-pool: balance
+      nodeTaints: ["acceptance-pool=balance:NoSchedule"]
+      osType: Linux
+      owner:
+        name: ${CLUSTER_NAME}
+      tags:
+        autoscaler-e2e-run: ${CLUSTER_NAME}
+        cluster-autoscaler-enabled: "true"
+        cluster-autoscaler-name: ${CLUSTER_NAME}
+        k8s.io_cluster-autoscaler_node-template_label_acceptance-pool: balance
+        k8s.io_cluster-autoscaler_node-template_taint_acceptance-pool: "balance:NoSchedule"
+        max: "2"
+        min: "0"
+      type: VirtualMachineScaleSets
+      vmSize: ${AZURE_AKS_NODE_MACHINE_TYPE:=Standard_D2s_v5}
+      orchestratorVersion: "${KUBERNETES_VERSION}"
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachinePool
+metadata:
+  annotations:
+    cluster.x-k8s.io/replicas-managed-by: cluster-autoscaler
+  name: ${CLUSTER_NAME}-baltwo
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: 0
+  template:
+    metadata: {}
+    spec:
+      bootstrap:
+        dataSecretName: ""
+      clusterName: ${CLUSTER_NAME}
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+        kind: AzureASOManagedMachinePool
+        name: ${CLUSTER_NAME}-baltwo
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1alpha1
+kind: AzureASOManagedMachinePool
+metadata:
+  name: ${CLUSTER_NAME}-baltwo
+spec:
+  resources:
+  - apiVersion: containerservice.azure.com/v1api20240901
+    kind: ManagedClustersAgentPool
+    metadata:
+      annotations:
+        serviceoperator.azure.com/credential-from: ${ASO_CREDENTIAL_SECRET_NAME}
+      name: ${CLUSTER_NAME}-baltwo
+    spec:
+      azureName: baltwo
+      maxPods: 110
+      mode: User
+      nodeLabels:
+        acceptance-pool: balance
+      nodeTaints: ["acceptance-pool=balance:NoSchedule"]
+      osType: Linux
+      owner:
+        name: ${CLUSTER_NAME}
+      tags:
+        autoscaler-e2e-run: ${CLUSTER_NAME}
+        cluster-autoscaler-enabled: "true"
+        cluster-autoscaler-name: ${CLUSTER_NAME}
+        k8s.io_cluster-autoscaler_node-template_label_acceptance-pool: balance
+        k8s.io_cluster-autoscaler_node-template_taint_acceptance-pool: "balance:NoSchedule"
+        max: "2"
+        min: "0"
+      type: VirtualMachineScaleSets
+      vmSize: ${AZURE_AKS_NODE_MACHINE_TYPE:=Standard_D2s_v5}
+      orchestratorVersion: "${KUBERNETES_VERSION}"

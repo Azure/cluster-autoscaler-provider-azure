@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	"k8s.io/utils/ptr"
@@ -46,10 +47,17 @@ func (a *AzureTestClient) Read(ctx context.Context) (Snapshot, error) {
 			return result, fmt.Errorf("VMSS %s has no numeric max tag", name)
 		}
 
+		minimum, err := strconv.Atoi(ptr.Deref(set.Tags["min"], ""))
+		if err != nil || minimum < 0 || minimum > maximum {
+			return result, fmt.Errorf("VMSS %s has invalid min/max tags", name)
+		}
+
 		pool := PoolState{
 			Capacity:          int(*set.SKU.Capacity),
+			Min:               minimum,
 			Max:               maximum,
 			ProvisioningState: ptr.Deref(set.Properties.ProvisioningState, ""),
+			TemplateTaint:     ptr.Deref(set.Tags[ZeroPoolTaintTag], ""),
 			Instances:         map[string]Instance{},
 		}
 		pager := a.vms.NewListPager(c.ResourceGroup, name, nil)
@@ -68,7 +76,20 @@ func (a *AzureTestClient) Read(ctx context.Context) (Snapshot, error) {
 
 				instance := Instance{
 					ID:                normalizeID(*vm.ID),
+					VMID:              ptr.Deref(vm.Properties.VMID, ""),
 					ProvisioningState: ptr.Deref(vm.Properties.ProvisioningState, ""),
+				}
+				if c.Preparation == "deallocate" {
+					view, err := a.vms.GetInstanceView(ctx, c.ResourceGroup, name, ptr.Deref(vm.InstanceID, ""), nil)
+					if err != nil {
+						return result, azureError("read VM power state", err)
+					}
+
+					for _, status := range view.Statuses {
+						if status != nil && strings.HasPrefix(ptr.Deref(status.Code, ""), "PowerState/") {
+							instance.PowerState = strings.TrimPrefix(*status.Code, "PowerState/")
+						}
+					}
 				}
 
 				for _, nic := range vm.Properties.NetworkProfile.NetworkInterfaces {
@@ -125,14 +146,16 @@ func poolsFromTags(sets []*armcompute.VirtualMachineScaleSet) (map[string]string
 		"pool0",
 		"main",
 		"zero",
+		"balone",
+		"baltwo",
 	} {
 		if pools[pool] == "" {
 			return nil, fmt.Errorf("fixture pool %s is missing", pool)
 		}
 	}
 
-	if len(pools) != 3 {
-		return nil, fmt.Errorf("expected three fixture pools, got %d", len(pools))
+	if len(pools) != 5 {
+		return nil, fmt.Errorf("expected five fixture pools, got %d", len(pools))
 	}
 
 	return pools, nil
@@ -145,6 +168,7 @@ func (e *Environment) findPools(sets []*armcompute.VirtualMachineScaleSet) error
 	}
 
 	e.Config.MainPool, e.Config.ZeroPool = pools["main"], pools["zero"]
+	e.Config.BalancePoolA, e.Config.BalancePoolB = pools["balone"], pools["baltwo"]
 	e.azure.config = e.Config
 
 	return nil

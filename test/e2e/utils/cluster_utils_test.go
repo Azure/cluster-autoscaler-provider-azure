@@ -30,6 +30,8 @@ func TestPoolsFromTags(t *testing.T) {
 		"pool0",
 		"main",
 		"zero",
+		"balone",
+		"baltwo",
 	} {
 		sets = append(sets, &armcompute.VirtualMachineScaleSet{
 			Name: ptr.To("vmss-" + name), Tags: map[string]*string{"aks-managed-poolName": ptr.To(name)},

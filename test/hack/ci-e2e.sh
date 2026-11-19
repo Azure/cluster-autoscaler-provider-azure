@@ -133,6 +133,9 @@ record_run() {
     local group image_ref status exists
     local images=("cluster-autoscaler-$GOARCH:$TAG")
 
+    if [[ -n ${E2E_DEALLOCATE_IMAGE:-} ]]; then
+        images+=("cluster-autoscaler-deallocate:$TAG")
+    fi
     for group in "${groups[@]}"; do
         exists=$(azs group exists --name "$group") || fail "Could not check resource group: $group"
         [[ $exists = false ]] || fail "Resource group already exists: $group"
@@ -182,6 +185,7 @@ run() {
 
     export REGISTRY TAG AZURE_TENANT_ID CLUSTER_TEMPLATE GOARCH
     record_run
+    import_deallocate_image
     git -C "$repo" rev-parse HEAD > "$ARTIFACTS/source-commit.txt"
     AZURE_TENANT_ID=$(azs account show --query tenantId --output tsv)
 
@@ -214,13 +218,18 @@ wait_workload() {
 }
 
 write_binding() {
-    local group=$1 client_id=$2
+    local group=$1 client_id=$2 deallocate_image=
+
+    if [[ -n ${E2E_DEALLOCATE_IMAGE:-} && $CLUSTER_NAME = "${clusters[0]}" ]]; then
+        deallocate_image=${IMAGE%/*}/cluster-autoscaler-deallocate:$TAG
+    fi
 
     jq -n --arg kubeconfig "$KUBECONFIG" --arg management "$MANAGEMENT_KUBECONFIG" \
         --arg cluster "$CLUSTER_NAME" --arg sub "$AZURE_SUBSCRIPTION_ID" \
-        --arg group "$group" --arg client "$client_id" --arg image "$IMAGE:$TAG" '
+        --arg group "$group" --arg client "$client_id" --arg image "$IMAGE:$TAG" --arg deallocate "$deallocate_image" '
         {kubeconfig:$kubeconfig,managementKubeconfig:$management,clusterName:$cluster,
-         subscriptionID:$sub,resourceGroup:$group,kubeletClientID:$client,expectedImage:$image}' > "$ARTIFACTS/environment.json"
+         subscriptionID:$sub,resourceGroup:$group,kubeletClientID:$client,expectedImage:$image}
+         + (if $deallocate == "" then {} else {deallocateImage:$deallocate} end)' > "$ARTIFACTS/environment.json"
 }
 
 bind_cluster() {
@@ -249,6 +258,15 @@ prepare_process() {
         wait_workload
     fi
     bind_cluster
+}
+
+import_deallocate_image() {
+    if [[ -n ${E2E_DEALLOCATE_IMAGE:-} ]]; then
+        azs acr import --name "$acr" \
+            --source "$E2E_DEALLOCATE_IMAGE" --image "cluster-autoscaler-deallocate:$TAG" --output none
+        azs acr repository show --name "$acr" --image "cluster-autoscaler-deallocate:$TAG" --query digest --output tsv \
+            > "$ARTIFACTS/deallocate-image-digest.txt"
+    fi
 }
 
 record_candidate() {
@@ -293,6 +311,9 @@ run_specs() {
     done
     mkdir -p "$ARTIFACTS/base"
     jq -s 'if length == 1 then .[0] else . end' "${bindings[@]}" > "$ARTIFACTS/base/environment.json"
+    if [[ -z $filter && -z ${E2E_DEALLOCATE_IMAGE:-} ]]; then
+        filter='!deallocate'
+    fi
 
     make -C "$repo/test" e2etests ENVIRONMENT="$ARTIFACTS/base/environment.json" \
         LABEL_FILTER="$filter" ARTIFACTS="$ARTIFACTS/base" TEST_TIMEOUT="${TEST_TIMEOUT:-6h}"
